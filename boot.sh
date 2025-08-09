@@ -112,6 +112,7 @@ arch-chroot /mnt/stage || { echo "Failed to chroot into /mnt/stage"; exit 1; }
 # - Timezone configuration
 ln -sf /usr/share/zoneinfo/US/Mountain /etc/localtime || { echo "Failed to set timezone"; exit 1; }
 # - Hardware clock setup
+hwclock --systohc || { echo "Failed to set hardware clock"; exit 1; }
 # - Locale generation
 # - Language configuration
 # - Console configuration persistence
