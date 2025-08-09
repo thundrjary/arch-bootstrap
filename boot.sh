@@ -115,6 +115,8 @@ ln -sf /usr/share/zoneinfo/US/Mountain /etc/localtime || { echo "Failed to set t
 hwclock --systohc || { echo "Failed to set hardware clock"; exit 1; }
 # - Locale generation
 # - Language configuration
+sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen || { echo "Failed to uncomment en_US.UTF-8 in locale.gen"; exit 1; }
+locale-gen || { echo "Failed to generate locale"; exit 1; }
 # - Console configuration persistence
 # - Hostname configuration
 # - Network configuration
