@@ -57,7 +57,10 @@ pacman -Sy --needed sgdisk cryptsetup btrfs-progs dosfstools util-linux gptfdisk
 # --------------------------
 
 # .B00: Confirm target disk and ensure it's not mounted
-lsblk
+lsblk -o NAME,SIZE,TYPE,MOUNTPOINT /dev/nvme0n1
+lsblk -nrpo MOUNTPOINT /dev/nvme0n1 | grep -q . && echo "[!] Something on /dev/nvme0n1 is mounted. Unmount first." && exit 1
+blockdev --getsize64 /dev/nvme0n1
+cat /sys/block/nvme0n1/device/model 2>/dev/null || echo "?"
 echo ""
 echo "WARNING: This will DESTROY ALL DATA on /dev/nvme0n1"
 echo "Current partition table:"
@@ -79,11 +82,15 @@ MIN_SIZE=$((20*1024*1024*1024))  # 20GB minimum
 [ "$DISK_SIZE" -lt "$MIN_SIZE" ] && { echo "ERROR: Disk too small (minimum 20GB)"; exit 1; }
 
 # .B05: Partition table creation
-sgdisk --zap-all /dev/nvme0n1
+echo "[*] Wiping old signatures & creating new aligned GPT"
+sudo wipefs -a /dev/nvme0n1
+sudo sgdisk -Z /dev/nvme0n1
+sudo sgdisk -a 2048 -o /dev/nvme0n1   # 1 MiB alignment
 
 # .B06: Partition alignment configuration
 # .B07: ESP partition creation
-sgdisk --new=1:0:+512M --typecode=1:EF00 --change-name=1:"EFI System Partition" /dev/nvme0n1
+# ESP 1 GiB starting at 1 MiB
+sudo sgdisk -n 1:2048:+${ESP_GIB}G  -t 1:EF00 -c 1:"ESP" /dev/nvme0n1
 
 # .B08: Root partition creation
 sgdisk --new=2:0:0 --typecode=2:8300 --change-name=2:"Linux filesystem" /dev/nvme0n1
