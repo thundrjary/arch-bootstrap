@@ -260,6 +260,20 @@ SWAP=$(blockdev --getsize64 /dev/nvme0n1p3)
 echo "Total: $TOTAL, Used: $((ESP + ROOT + SWAP)), Free: $((TOTAL - ESP - ROOT - SWAP))"
 echo "OP space: $((TOTAL - ESP - ROOT - SWAP)) bytes = $(((TOTAL - ESP - ROOT - SWAP) / 1024 / 1024 / 1024)) GiB"
 
+# .TEST20: Hardware compatibility verification
+echo "TEST20: Hardware compatibility verification"
+lscpu | grep -E "(Vendor ID|Model name|Flags.*aes)"
+lsmod | grep -E "(aes|crypto)"
+cat /proc/meminfo | grep MemTotal
+dmesg | grep -i "nvme\|ssd" | head -5
+
+# .TEST21: Memory/swap ratio verification
+echo "TEST21: Memory/swap ratio verification"
+TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+TOTAL_RAM_GB=$((TOTAL_RAM_KB / 1024 / 1024))
+SWAP_SIZE_GB=$(((SWAP) / 1024 / 1024 / 1024))
+echo "RAM: ${TOTAL_RAM_GB}GB, Swap: ${SWAP_SIZE_GB}GB, Ratio: $(echo "scale=2; $SWAP_SIZE_GB / $TOTAL_RAM_GB" | bc)"
+
 # Reminder for base install
 echo "pacstrap /mnt base linux linux-headers linux-lts linux-lts-headers \\"
 echo "               linux-firmware mkinitcpio btrfs-progs cryptsetup \\"
@@ -302,6 +316,17 @@ for pkg in base linux linux-lts networkmanager; do
     arch-chroot /mnt/stage pacman -Qi $pkg >/dev/null || { echo "ERROR: Critical package $pkg not installed"; exit 1; }
 done
 echo "Critical packages verified"
+
+# .TEST22: Package dependency verification
+echo "TEST22: Package dependency verification"
+arch-chroot /mnt/stage pacman -Qi linux | grep "Required By"
+arch-chroot /mnt/stage pacman -Qi linux-lts | grep "Required By"
+arch-chroot /mnt/stage pacman -Qi intel-ucode | grep "Install Date"
+
+# .TEST23: Microcode verification
+echo "TEST23: Microcode verification"
+arch-chroot /mnt/stage ls -la /boot/intel-ucode.img
+arch-chroot /mnt/stage file /boot/intel-ucode.img
 
 
 # [F] MOUNT CONFIGURATION PHASE
@@ -358,6 +383,14 @@ cat > /etc/hosts <<EOF
 127.0.1.1   lollypop.localdomain lollypop
 EOF
 
+# .TEST24: System configuration verification
+echo "TEST24: System configuration verification"
+ls -la /etc/localtime
+locale | grep LANG
+cat /etc/vconsole.conf
+cat /etc/hostname
+getent hosts lollypop
+
 
 # [H] BOOT CONFIGURATION PHASE
 # ----------------------------
@@ -376,6 +409,13 @@ systemctl enable systemd-timesyncd
 
 # mkinitcpio hooks for systemd initramfs with sd-encrypt + resume
 sed -i 's/^HOOKS=.*/HOOKS=(base systemd autodetect modconf kms keyboard sd-vconsole block sd-encrypt resume filesystems fsck)/' /etc/mkinitcpio.conf
+
+# .TEST25: mkinitcpio configuration verification
+echo "TEST25: mkinitcpio configuration verification"
+grep "^HOOKS=" /etc/mkinitcpio.conf
+grep "sd-encrypt" /etc/mkinitcpio.conf
+grep "resume" /etc/mkinitcpio.conf
+grep "systemd" /etc/mkinitcpio.conf
 
 # .H02: Initramfs generation
 mkinitcpio -P
@@ -471,6 +511,18 @@ done
 echo "TEST16: Boot entry UUID verification"
 grep UUID /mnt/stage/boot/loader/entries/*.conf
 
+# .TEST26: Kernel parameter verification
+echo "TEST26: Kernel parameter verification"
+grep "root=/dev/mapper/cryptroot" /mnt/stage/boot/loader/entries/*.conf
+grep "rootflags=subvol=" /mnt/stage/boot/loader/entries/*.conf
+grep "resume=UUID=" /mnt/stage/boot/loader/entries/*.conf
+grep "loglevel=" /mnt/stage/boot/loader/entries/*.conf
+
+# .TEST27: Compression settings verification
+echo "TEST27: Btrfs compression verification"
+mount | grep /mnt/stage | grep compress
+btrfs property get /mnt/stage compression
+
 
 # [I] SECURITY CONFIGURATION PHASE
 # --------------------------------
@@ -515,6 +567,18 @@ fi
 # .J05: TLP enablement
 systemctl enable tlp tlp-sleep
 
+# .TEST28: System tuning verification
+echo "TEST28: System tuning verification"
+cat /etc/sysctl.d/99-sysctl.conf
+systemctl is-enabled fstrim.timer
+systemctl is-enabled systemd-timesyncd
+systemctl is-enabled tlp
+
+# .TEST29: Service configuration verification
+echo "TEST29: Service configuration verification"
+systemctl is-enabled NetworkManager
+systemctl is-enabled bluetooth
+
 # .J06: Disable Intel PSR (i915)
 echo "options i915 enable_psr=0" > /etc/modprobe.d/i915.conf
 
@@ -532,8 +596,22 @@ snapper -c root create-config /
 snapper -c home create-config /home
 snapper -c var create-config /var
 
+# .TEST31: Snapper configuration verification
+echo "TEST31: Snapper configuration verification"
+snapper -c root list
+snapper -c home list  
+snapper -c var list
+ls -la /etc/snapper/configs/
+
 # .J09: Bluetooth setup
 systemctl enable bluetooth
+
+# .TEST30: User account verification
+echo "TEST30: User account verification"
+getent passwd $USERNAME
+groups $USERNAME
+ls -la /home/$USERNAME/
+cat /etc/sudoers.d/wheel
 
 CHROOT_EOF2
 
@@ -564,6 +642,14 @@ else
 fi
 umount /mnt/sbx /mnt/.btrfs
 
+# .TEST32: Sandbox subvolume verification
+echo "TEST32: Sandbox subvolume verification"
+mount -o subvolid=5 /dev/mapper/cryptroot /mnt/.btrfs
+btrfs subvolume list /mnt/.btrfs | grep sandbox
+btrfs subvolume show /mnt/.btrfs/@sandbox
+btrfs subvolume show /mnt/.btrfs/@sandbox-home
+umount /mnt/.btrfs
+
 # .J12: Get username for system configuration
 USERNAME=$(arch-chroot /mnt/stage getent passwd | awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' | head -1)
 
@@ -590,6 +676,14 @@ EOF
     arch-chroot /mnt/stage chown $USERNAME:$USERNAME /home/$USERNAME/.bash_profile
     arch-chroot /mnt/stage systemctl enable getty@tty1
     echo "Autologin configured for $USERNAME"
+fi
+
+# .TEST33: Autologin configuration verification
+echo "TEST33: Autologin configuration verification"
+if [ -n "$USERNAME" ]; then
+    cat /mnt/stage/etc/systemd/system/getty@tty1.service.d/override.conf
+    cat /mnt/stage/home/$USERNAME/.bash_profile
+    arch-chroot /mnt/stage systemctl is-enabled getty@tty1
 fi
 
 
@@ -645,6 +739,48 @@ echo "=== Boot Files Summary ==="
 ls -la /mnt/stage/boot/loader/entries/
 echo "=== Subvolume Summary ==="
 btrfs subvolume list /mnt/stage
+
+# .TEST34: Recovery readiness verification
+echo "TEST34: Recovery readiness verification"
+ls -la gpt-nvme0n1-backup.bin
+file gpt-nvme0n1-backup.bin
+echo "GPT backup location: $(pwd)/gpt-nvme0n1-backup.bin"
+
+# .TEST35: Over-provisioning verification
+echo "TEST35: Over-provisioning verification"
+DISK_MODEL=$(cat /sys/block/nvme0n1/device/model 2>/dev/null || echo "Unknown")
+echo "Disk model: $DISK_MODEL"
+echo "Total disk space: $((TOTAL / 1024 / 1024 / 1024)) GiB"
+echo "Unallocated space: $(((TOTAL - ESP - ROOT - SWAP) / 1024 / 1024 / 1024)) GiB"
+OP_PERCENT=$(echo "scale=2; ((($TOTAL - $ESP - $ROOT - $SWAP) * 100) / $TOTAL)" | bc)
+echo "Over-provisioning percentage: ${OP_PERCENT}%"
+
+# .TEST36: Secure Boot readiness verification
+echo "TEST36: Secure Boot readiness verification"
+efivar -l | grep -i secureboot || echo "No SecureBoot variables found"
+ls -la /sys/firmware/efi/efivars/ | grep -i secureboot || echo "No SecureBoot EFI vars"
+bootctl status 2>/dev/null | grep -i secure || echo "SecureBoot status unknown"
+
+# .TEST37: Plymouth and graphics verification
+echo "TEST37: Plymouth and graphics configuration verification"
+arch-chroot /mnt/stage pacman -Qi plymouth | grep "Install Date"
+arch-chroot /mnt/stage pacman -Qi mesa | grep "Install Date"
+lspci | grep -i vga
+lsmod | grep -i i915
+
+# .TEST38: Network and connectivity verification
+echo "TEST38: Network and connectivity readiness verification"
+arch-chroot /mnt/stage pacman -Qi networkmanager | grep "Install Date"
+ip link show
+lspci | grep -i network
+lsusb | grep -i wireless || echo "No USB wireless devices"
+
+# .TEST39: Audio system verification
+echo "TEST39: Audio system verification"
+arch-chroot /mnt/stage pacman -Qi pipewire | grep "Install Date"
+arch-chroot /mnt/stage pacman -Qi wireplumber | grep "Install Date"
+lspci | grep -i audio
+cat /proc/asound/cards 2>/dev/null || echo "No sound cards detected yet"
 
 
 # [L] REBOOT PHASE
