@@ -3,6 +3,10 @@
 # ARCH LINUX BOOTSTRAP
 # ====================
 
+# [BOOTRSTRAP SETUP]
+# Implement State Machine:
+#   -> Pre-Instlled
+
 # [A] PRE-INSTALLATION PHASE
 # --------------------------
 
@@ -15,11 +19,159 @@ dd bs=4M if=archlinux.iso of=/dev/sdX status=progress oflag=sync
 # .A03: Boot into live environment
 echo "Please reboot into your firmware settings (UEFI/BIOS) and disable Secure Boot before proceeding."
 
-# .A04: Console keyboard layout configuration
-# .A05: Console font configuration
+pacman -Sy --noconfirm mokuil \                                                  #  Checks if Secure Boot is currently enabled.  
+  && mokutil --sb-state \ # expected: "SecureBoot disabled"                      #  The Arch ISO will not boot if Secure Boot 
+  && pacman -Rns --noconfirm mokutil \                                           #  remains on, because it is unsigned.  
+  && pacman -Scc --noconfirm                                                     #  Expected output: "SecureBoot disabled" at 
+                                                                                 #  this stage.
 
+efi-readvar                                                                      # Displays UEFI Secure Boot keys (PK, KEK, db, dbx).
+                                                                                 # NOTE: These only matter if Secure Boot is ENABLED.
+                                                                                 # For a typical Arch install, Secure Boot should be
+                                                                                 # disabled in firmware to avoid bootloader blocks.
+                                                                                 #
+                                                                                 # Expected for a successful install:
+                                                                                 #   - Secure Boot state: disabled (check with `mokutil --sb-state`)
+                                                                                 #   - Keys may still be present in PK/KEK/db/dbx — this is fine.
+                                                                                 #   - Firmware will ignore them while Secure Boot is off.
+                                                                                 #
+                                                                                 # If Secure Boot is ON, install will only succeed if:
+                                                                                 #   - Your bootloader/kernel is signed with a key in `db`, AND
+                                                                                 #   - That key is not blacklisted in `dbx`.
+                                                                                 #
+                                                                                 # /mnt/tools/005-efi-read-vars-summary
+
+dmesg | grep -i tpm                                                              # Searches kernel log for TPM (Trusted Platform Module) messages.
+                                                                                 # Confirms TPM hardware was found and driver loaded.
+                                                                                 #
+                                                                                 # Expected for most systems:
+                                                                                 #   - Line showing TPM version (e.g., "2.0") and manufacturer.
+                                                                                 #   - "tpm_tis" or similar driver successfully initialized.
+                                                                                 #   - Optional systemd messages like "TPM PCR Measurements was skipped..."
+                                                                                 #     are normal if not using measured-UKI boot.
+                                                                                 #   - No driver errors or hardware timeouts.
+                                                                                 #
+                                                                                 # If missing or errors appear:
+                                                                                 #   - TPM may be disabled in firmware or unsupported by the kernel.
+
+systemd-cryptenroll --tpm2-device=list                                           # Lists TPM 2.0 devices detected by systemd-cryptenroll.
+                                                                                 # Quickest way to confirm the OS can see the TPM for LUKS binding.
+                                                                                 #
+                                                                                 # Expected:
+                                                                                 #   - At least one line like: "TPM2 device /dev/tpmrm0: ManufacturerID=..."
+                                                                                 #     indicating a usable TPM 2.0 resource.
+                                                                                 #
+                                                                                 # If no devices are shown:
+                                                                                 #   - TPM may be disabled in BIOS.
+                                                                                 #   - Hidden by firmware security settings.
+                                                                                 #   - Kernel module (e.g., tpm_tis, tpm_crb) may be missing/not loaded.
+                                                                                 # Without a visible TPM, you cannot proceed with `.C03 TPM2 enrollment`.
+
+tpm2_getcap properties-fixed                                                     # Displays fixed TPM 2.0 hardware properties.
+                                                                                 # Output includes:
+                                                                                 #   - Family/Version (TPM2_PT_FAMILY_INDICATOR / TPM2_PT_REVISION)
+                                                                                 #   - Manufacturer (TPM2_PT_MANUFACTURER, vendor strings)
+                                                                                 #   - Firmware version (TPM2_PT_FIRMWARE_VERSION_1 / _2)
+                                                                                 #   - PCR count (TPM2_PT_PCR_COUNT)
+                                                                                 #   - Supported crypto algorithms (hash, symmetric)
+                                                                                 #
+                                                                                 # Expected for modern TPM 2.0:
+                                                                                 #   - Family: "2.0"
+                                                                                 #   - Manufacturer: recognizable vendor code (e.g., "NTC" = Nuvoton)
+                                                                                 #   - PCR count: usually 24 (0x18)
+                                                                                 #   - Context hash: 0xC = SHA256 supported
+                                                                                 #   - Firmware version: non-zero, matching vendor release
+                                                                                 #   - Modes: TPMA_MODES_FIPS_140_2 if FIPS certified
+                                                                                 #
+                                                                                 # Use this to verify TPM meets your encryption/secure-boot requirements:
+                                                                                 #   - SHA256 or stronger hash available
+                                                                                 #   - Adequate PCR count for your measured boot design
+                                                                                 #   - Vendor/firmware matches expected hardware
+                                                                                 #
+                                                                                 # If values are unexpected:
+                                                                                 #   - Update TPM firmware if supported
+                                                                                 #   - Replace TPM module if defective/unsupported
+
+dmidecode -t 43                                                                  #  Retrieves SMBIOS Type 43 information.  
+                                                                                 #  Confirms that BIOS is advertising TPM 
+                                                                                 #  presence to the OS.  
+                                                                                 #
+                                                                                 #  If visible here but not in 
+                                                                                 #  `systemd-cryptenroll`, the issue is likely 
+                                                                                 #  driver-related rather than firmware.
+
+grep sgx /proc/cpuinfo                                                           #  Checks CPU flags for SGX support.  
+                                                                                 #  Presence here means SGX is enabled in 
+                                                                                 #  firmware; absence means it is off.  
+                                                                                 #  Your plan calls for SGX to be disabled to 
+                                                                                 #  simplify the build and avoid unused enclave 
+                                                                                 #  memory reservations.
+                                                                                 #  
+                                                                                 #  No Output
+
+lsmod | grep sgx                                                                 #  Checks if the SGX kernel driver is loaded.  
+                                                                                 #  If SGX is disabled in BIOS, this should 
+                                                                                 #  return no results.
+                                                                                 #  
+                                                                                 #  No Output
+
+lspci | grep -i sata # no output                                                 #  Shows SATA storage controller(s).  
+lspci | grep -i nvme                                                             #  Shows NVMe controller(s).  
+                                                                                 #  Both commands help confirm whether storage 
+                                                                                 #  devices are presented as expected and if 
+                                                                                 #  AHCI/NVMe modes are correct per your plan.
+
+lsblk -o NAME,PHY-SeC,LOG-SeC                                                    #  Displays the physical and logical sector 
+                                                                                 #  sizes for block devices.  
+                                                                                 #  Ensures that the chosen partition alignment 
+                                                                                 #  (1 MiB) and filesystem layout will be 
+                                                                                 #  optimal for the device.
+
+dmesg | grep -i sgx                                                              #  Checks kernel logs for SGX memory 
+                                                                                 #  reservations.  
+                                                                                 #  If disabled in BIOS, no reservation should 
+                                                                                 #  be shown.
+                                                                                 #  
+                                                                                 #  No Output
+
+dmidecode | less                                                                 #  Dumps complete SMBIOS data for review.  
+                                                                                 #  This is a general-purpose sanity check to 
+                                                                                 #  confirm firmware version, system model, 
+                                                                                 #  and any hardware flags relevant to the 
+                                                                                 #  installation strategy.
+
+# .A04: Console keyboard layout configuration
+localectl list-keymaps
+loadkeys us
+sudo vim /etc/vconsole.conf # Add line: KEYMAP=us
+localectl status
+
+
+
+# .A05: Console font configuration
 # .A06: Boot mode verification (UEFI/BIOS)
-ls /sys/firmware/efi/efivars >/dev/null 2>&1 && echo "UEFI mode confirmed" || { echo "ERROR: BIOS mode detected, UEFI required"; exit 1; }
+EFI_SIZE="/sys/firmware/efi/fw_platform_size"                                    #  Checks the reported EFI firmware platform size.  
+EFI_VARS="/sys/firmware/efi/efivars"                                             #  Expected output is "64" for a 64-bit UEFI 
+cat "$EFI_SIZE"                                                                  #  environment, which is required for your 
+                                                                                 #  systemd-boot + TPM2 strategy.  
+                                                                                 #  Any other value (or an error) likely means 
+                                                                                 #  you are in legacy BIOS mode and must reboot 
+                                                                                 #  and enable UEFI in firmware settings.
+
+OK(){ echo "UEFI mode confirmed"; }                                              #  Confirms the presence of EFI variables in 
+FAIL() {echo "ERROR: BIOS mode detected, UEFI req"; exit 1; }                    #  `/sys/firmware/efi/efivars`.  
+[ -d "$EFI_VARS" ] && OK || FAIL                                                 #
+                                                                                 #  If these are accessible, you are in UEFI mode.  
+                                                                                 #  If not found, the system has booted in legacy 
+                                                                                 #  BIOS mode, and the script will exit with an 
+                                                                                 #  error. This is a hard stop in your procedure 
+                                                                                 #  since your boot configuration depends entirely 
+                                                                                 #  on UEFI.
+
+command -v efibootmgr >/dev/null &&                                              #  (Optional) Extra confirmation if efibootmgr is available:
+  efibootmgr | head -n1                                                          #  efibootmgr reads EFI NVRAM boot entries; if it
+                                                                                 #  runs and returns entries, that’s further evidence
+                                                                                 #  you’re in UEFI mode.
 
 # .A07: Network interface setup
 
@@ -59,20 +211,59 @@ pacman -Sy --needed sgdisk cryptsetup btrfs-progs dosfstools util-linux gptfdisk
 # .B00: Confirm target disk and ensure it's not mounted
 lsblk -o NAME,SIZE,TYPE,MOUNTPOINT /dev/nvme0n1
 lsblk -nrpo MOUNTPOINT /dev/nvme0n1 | grep -q . && echo "[!] Something on /dev/nvme0n1 is mounted. Unmount first." && exit 1
-blockdev --getsize64 /dev/nvme0n1
-cat /sys/block/nvme0n1/device/model 2>/dev/null || echo "?"
+blockdev --getsize64 /dev/nvme0n1 # 256060514304
+cat /sys/block/nvme0n1/device/model 2>/dev/null || echo "?" # KBG40ZNT256G TOSHIBA MEMORY
 echo ""
 echo "WARNING: This will DESTROY ALL DATA on /dev/nvme0n1"
 echo "Current partition table:"
 sgdisk --print /dev/nvme0n1 2>/dev/null || echo "No existing partition table found"
+# > Creating new GPT entries in memory.
+# > Disk /dev/nvme0n1: 500118192 sectors, 238.5 GiB
+# > Model: KBG40ZNT256G TOSHIBA MEMORY
+# > Sector size (logical/physical): 512/512 bytes
+# > Disk identifier (GUID): 0B1B09A1-AA1E-4C62-93C7-F975342F5987
+# > Partition table holds up to 128 entries
+# > Main partition table begins at sector 2 and ends at sector 33
+# > First usable sector is 34, last usable sector is 500118158
+# > Partitions will be aligned on 2048-sector boundaries
+# > Total free space is 500118125 sectors (238.5 GiB)
+# > 
+# > Number  Start (sector)    End (sector)  Size       Code  Name
 echo ""
 read -p "Type 'YES' to continue with disk destruction: " confirm
 [ "$confirm" = "YES" ] || { echo "Aborted by user"; exit 1; }
 
 # .B01: Block device identification
+
+# List all block devices with detailed information
+lsblk
+
+# Detailed information about block devices
+lsblk -f
+
+# Disk information using fdisk
+fdisk -l
+# > Disk /dev/nvme0n1: 238.47 GiB, 256060514304 bytes, 500118192 sectors
+# > Disk model: KBG40ZNT256G TOSHIBA MEMORY
+# > Units: sectors of 1 * 512 = 512 bytes
+# > Sector size (logical/physical): 512 bytes / 512 bytes
+# > I/O size (minimum/optimal): 512 bytes / 512 bytes
+
+# Get UUID and filesystem type for all block devices
+blkid
+
+# Detailed disk information
+parted -l
+
+# Probe for block devices
+udevadm info --attribute-walk /dev/nvme0n1
+
+# Disk usage information
+df -h
+
 # .B02: Existing partition detection
-umount /dev/nvme0n1* 2>/dev/null || true
-swapoff /dev/nvme0n1* 2>/dev/null || true
+umount /dev/nvme0n1* 2>/dev/null || true # 32 means it isn't mounted
+swapoff /dev/nvme0n1* 2>/dev/null || true # 4 indicates attempted op was not possible (no swap mounted)
 
 # .B03: Disk controller mode verification
 # .B04: Sector size optimization check
@@ -83,12 +274,68 @@ MIN_SIZE=$((20*1024*1024*1024))  # 20GB minimum
 
 # .B05: Partition table creation
 echo "[*] Wiping old signatures & creating new aligned GPT"
-sudo wipefs -a /dev/nvme0n1
-sudo sgdisk -Z /dev/nvme0n1
-sudo sgdisk -a 2048 -o /dev/nvme0n1   # 1 MiB alignment
+sudo wipefs -a /dev/nvme0n1                                   # Using these both together
+sudo sgdisk -Z /dev/nvme0n1                                   # ensures  thorough disk preparation
+                                                              # -a : removes any lingering filesystem signature
+                                                              # -Z : complete GPT table removal
+
+sudo sgdisk -a 2048 -o /dev/nvme0n1   # 1 MiB alignment; 2048 good for modern SSD, esp. NVMe; 2048 sectors * 512 bytes = 1 MiB
+                                      # - ensures optimal performance
+                                      # - aligns with modern SSD architecture
+                                      # - prevents performance penalties from misaligned partitions
+                                      # - recommended for most current SSD/NVMe drives
+
+  # TO VERIFY:
+    # Verify partition table
+    parted /dev/nvme0n1 print
+    # Expected: Shows GPT table, 0 partitions, start aligned at 1 MiB (2048 sectors)
+    
+    # Detailed GPT information
+    sgdisk -p /dev/nvme0n1
+    # Expected: Shows disk size, no partitions, protective MBR intact
+    
+    # Check disk information
+    fdisk -l /dev/nvme0n1
+    # Expected: Shows disk model, size, sector size, no partitions
+    
+    # Verify sector alignment
+    fdisk -l /dev/nvme0n1 | grep "Sector size"
+    # Expected: "Sector size (logical/physical): 512 bytes / 512 bytes"
+    
+    # Alternative detailed view
+    lsblk -o NAME,SIZE,TYPE,MOUNTPOINTS,FSTYPE
+    # Expected: Shows disk with no mountpoints or filesystems
+    
+    # Verify GPT header
+    sudo gdisk -l /dev/nvme0n1
+    # Expected: Shows GPT header information, no partitions
 
 # .B06: Partition alignment configuration
 # .B07: ESP partition creation
+
+# Disk: /dev/nvme0n1 (238.5 GiB)
+# +--------------------------------------------------+
+# |  Protective MBR & GPT Header (1 MiB)             |
+# +--------------------------------------------------+
+# |  ESP Partition                                   |
+# |  Size: 1 GiB                                     |
+# |  Type: EF00 (EFI System)                         |
+# |  Label: "ESP"                                    |
+# +--------------------------------------------------+
+# |  Root Partition (Encrypted)                      |
+# |  Size: ~185.5 GiB                                |
+# |  Type: 8309 (LUKS)                               |
+# |  Label: "cryptroot"                              |
+# +--------------------------------------------------+
+# |  Swap Partition (Encrypted)                      |
+# |  Size: 20 GiB                                    |
+# |  Type: 8309 (LUKS)                               |
+# |  Label: "cryptswap"                              |
+# +--------------------------------------------------+
+# |  Unallocated Space                               |
+# |  Size: 32 GiB                                    |
+# +--------------------------------------------------+
+
 # ESP 1 GiB starting at 1 MiB
 sudo sgdisk -n 1:2048:+1G -t 1:EF00 -c 1:"ESP" /dev/nvme0n1
 
@@ -103,7 +350,7 @@ sudo sgdisk -n 3:0:-20G -t 3:8309 -c 3:"cryptswap" /dev/nvme0n1
 sudo sgdisk -p /dev/nvme0n1
 sudo sgdisk --backup=gpt-nvme0n1-backup.bin /dev/nvme0n1
 sudo sgdisk --load-backup=gpt-nvme0n1-backup.bin /dev/nvme0n1
-sudo sgdisk -e /dev/nvme0n1
+sudo sgdisk -e /dev/nvme0n1 # moves main GPT data structures to end of the disk; provides backup of primary GPT header at start of disk
 sudo partprobe /dev/nvme0n1
 
 # .TEST01: Sector size consistency verification
@@ -114,9 +361,9 @@ fdisk -l /dev/nvme0n1 | grep "Sector size"
 
 # .TEST02: Partition alignment verification  
 echo "TEST02: Partition alignment verification"
-sgdisk -A 1 /dev/nvme0n1    # ESP alignment check
-sgdisk -A 2 /dev/nvme0n1    # Root alignment check
-sgdisk -A 3 /dev/nvme0n1    # Swap alignment check
+sgdisk -i 1 /dev/nvme0n1    # ESP partition info
+sgdisk -i 2 /dev/nvme0n1    # Root partition info
+sgdisk -i 3 /dev/nvme0n1    # Swap partition info
 parted /dev/nvme0n1 align-check optimal 1
 parted /dev/nvme0n1 align-check optimal 2
 parted /dev/nvme0n1 align-check optimal 3
