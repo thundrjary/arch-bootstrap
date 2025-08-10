@@ -37,10 +37,15 @@ pacman-key --init && pacman-key --populate archlinux
 
 # .A11: Encryption mode selection (TPM2/passphrase)
 # .A12: Partition size planning
+# .A13: Install tooling
+pacman -Sy --needed sgdisk cryptsetup btrfs-progs dosfstools util-linux gptfdisk
 
 
 # [B] DISK PREPARATION PHASE
 # --------------------------
+
+# .B00: Confirm target disk and ensure it's not mounted
+lsblk
 
 # .B01: Block device identification
 # .B02: Existing partition detection
@@ -75,7 +80,8 @@ cryptsetup luksFormat --type luks2 /dev/nvme0n1p2
 cryptsetup open /dev/nvme0n1p2 cryptroot
 [ -b /dev/mapper/cryptroot ]
 
-# .C06: Crypttab.initramfs creation
+# .C06: Crypttab.initramfs creation (TPM2 auto-unlock)
+printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$(blkid -s UUID -o value /dev/nvme0n1p2)" > /etc/crypttab.initramfs
 
 
 # [D] FILESYSTEM PHASE
@@ -105,14 +111,15 @@ umount /mnt/stage
 # .D05: Compression configuration
 # .D06: Mount option configuration
 mount -o compress=zstd:3,noatime,commit=120,ssd,discard=async,space_cache=v2,autodefrag,subvol=@main /dev/mapper/cryptroot /mnt/stage
-mkdir -p /mnt/stage/{efi,home,var,tmp}
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@main-home /dev/mapper/cryptroot /mnt/stage/home
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@sandbox /dev/mapper/cryptroot /mnt/stage/
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@var /dev/mapper/cryptroot /mnt/stage/var
+mkdir -p /mnt/stage/{efi,home,var,tmp,shared,usr/local}
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@main-home   /dev/mapper/cryptroot /mnt/stage/home
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@var         /dev/mapper/cryptroot /mnt/stage/var
 mkdir -p /mnt/stage/var/{log,cache}
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@log /dev/mapper/cryptroot /mnt/stage/var/log
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@cache /dev/mapper/cryptroot /mnt/stage/var/cache
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@tmp /dev/mapper/cryptroot /mnt/stage/tmp
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@log         /dev/mapper/cryptroot /mnt/stage/var/log
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@cache       /dev/mapper/cryptroot /mnt/stage/var/cache
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@tmp         /dev/mapper/cryptroot /mnt/stage/tmp
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@shared      /dev/mapper/cryptroot /mnt/stage/shared
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@user-local  /dev/mapper/cryptroot /mnt/stage/usr/local
 mount /dev/nvme0n1p1 /mnt/stage/efi
 
 
@@ -123,6 +130,7 @@ mount /dev/nvme0n1p1 /mnt/stage/efi
 pacman -Sy archlinux-keyring
 
 # E02: Mirror selection & ranking
+pacman -Sy --needed reflector
 reflector --country US --latest 50 --protocol https --sort rate --save /etc/pacman.d/mirrorlist
 
 # E03–E08: All base system, tools, drivers, firmware, and extras
@@ -136,7 +144,9 @@ pacstrap -K /mnt/stage \
     mesa vulkan-intel intel-media-driver \    # .E08 Graphics & video drivers
     libinput iio-sensor-proxy \               # .E08 Input & sensor drivers
     tlp tlp-rdw pipewire wireplumber pipewire-pulse \ # .E08 Power & audio system
-    sof-firmware                              # .E08 Intel audio firmware
+    sof-firmware \                            # .E08 Intel audio firmwar
+    plymouth \
+    uwsm
 
 
 # [F] MOUNT CONFIGURATION PHASE
@@ -184,7 +194,7 @@ systemctl enable NetworkManager
 # .G09: Hosts file setup
 echo "127.0.0.1 localhost" >> /etc/hosts
 echo "::1 localhost" >> /etc/hosts
-echo "127.0.1.1 lollypop.localdomain lollypop"
+echo "127.0.1.1 lollypop.localdomain lollypop" >> /etc/hosts
 
 
 # [H] BOOT CONFIGURATION PHASE
@@ -195,16 +205,16 @@ printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$(blkid -s UUID -o value /dev/n
 sed -i \
   -e 's/^#\?COMPRESSION=.*/COMPRESSION="zstd"/' \
   -e 's/^MODULES=.*/MODULES=(btrfs)/' \
-  -e 's/^HOOKS=.*/HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt filesystems fsck)/' \
+  -e 's/^HOOKS=.*/HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt plymouth filesystems fsck)/' \
   /etc/mkinitcpio.conf
 
 # .H02: Initramfs generation
 mkinitcpio -P
 
 # .H03: Bootloader installation
+mkdir -p /efi
+mountpoint -q /efi || mount $(blkid -t PARTLABEL="EFI System Partition" -o device || echo /dev/nvme0n1p1) /efi || true
 grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB
-grub-mkconfig -o /boot/grub/grub.cfg
-[ -f /boot/grub/grub.cfg ]
 
 # .H04: Boot entry creation
 # .H05: Fallback entry creation
@@ -213,8 +223,12 @@ grub-mkconfig -o /boot/grub/grub.cfg
 LUKS_UUID=$(blkid -s UUID -o value /dev/nvme0n1p2)
 [ -z "$LUKS_UUID" ] && { echo "ERROR: Could not determine LUKS UUID for kernel params"; exit 1; }
 cp /etc/default/grub /etc/default/grub.bak
-sed -i "s/^GRUB_CMDLINE_LINUX=\"/GRUB_CMDLINE_LINUX=\"rd.luks.name=${LUKS_UUID}=cryptroot root=\/dev\/mapper\/cryptroot /" /etc/default/grub
-grep -q "rd.luks.name=" /etc/default/grub
+# [CHANGED] include quiet splash for Plymouth
+sed -i "s/^GRUB_CMDLINE_LINUX=\"/GRUB_CMDLINE_LINUX=\"rd.luks.name=${LUKS_UUID}=cryptroot root=\/dev\/mapper\/cryptroot quiet splash /" /etc/default/grub
+# [OPTIONAL] Hide LUKS details unless needed
+grep -q "rd.systemd.show_status" /etc/default/grub || \
+  sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="rd.systemd.show_status=auto /' /etc/default/grub
+
 grub-mkconfig -o /boot/grub/grub.cfg
 
 # .H08: Resume/hibernation setup
@@ -232,8 +246,7 @@ passwd
 # .I05: UKI creation (optional)
 
 # .I06: TPM2 configuration
-systemd-cryptenroll --tpm2-device=list > /dev/null 2>&1
-if systemd-cryptenroll --tpm2-device=list > /dev/null 2>&1; then
+if systemd-cryptenroll --tpm2-device=list >/dev/null 2>&1; then
     systemd-cryptenroll /dev/nvme0n1p2 --tpm2-device=auto --tpm2-pcrs=0+7
     echo "TPM2 enrollment successful"
     cryptsetup luksDump /dev/nvme0n1p2 | grep -q "tpm2" && echo "TPM2 token verified in LUKS header" || echo "Warning: TPM2 token not found in LUKS header"
@@ -246,7 +259,7 @@ fi
 # -----------------------------
 
 # .J01: Swappiness tuning
-echo "vm.swappiness=10" >> /etc/sysctl.d/99-swappiness.conf
+echo "vm.swappiness=10" > /etc/sysctl.d/99-swappiness.conf
 
 # .J02: TRIM timer enablement
 systemctl enable fstrim.timer
@@ -262,9 +275,8 @@ systemctl enable tlp tlp-sleep
 # .J06: Disable Intel PSR (i915)
 echo "options i915 enable_psr=0" > /etc/modprobe.d/i915.conf
 
-# .J07: Compression settings
-# .J08: Snapshot setup
-pacman -S snapper snapper-support snap-pac grub-btrfs
+# .J08: Snapper setup (let snapper manage its own .snapshots subvolumes)
+pacman -S --needed snapper snapper-support snap-pac grub-btrfs
 snapper -c root create-config /
 snapper -c home create-config /home
 snapper -c var create-config /var
@@ -325,6 +337,8 @@ passwd <user>
 EDITOR=vim visudo
 
 # .M07: GUI installation
+# TODO pacman -S sway foot # example (choose your compositor/DE)
+
 # .M08: Additional software setup
 # .M09: Update mirrors
 reflector --country US --latest 50 --protocol https --sort rate --save /etc/pacman.d/mirrorlist
