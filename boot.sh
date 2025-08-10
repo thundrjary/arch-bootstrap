@@ -45,10 +45,13 @@ sudo sgdisk --print /dev/nvme0n1 || { echo "Failed to print partition table"; ex
 # 
 # ### [C] Encryption Phase
 # - C01: LUKS container creation
+cryptsetup luksFormat --type luks2 /dev/nvme0n1p2
 # - C02: PBKDF parameter tuning
 # - C03: TPM2 enrollment
+systemd-cryptenroll /dev/nvme0n1p2 --tpm2-device=auto --tpm2-pcrs=0+7
 # - C04: Passphrase configuration
 # - C05: LUKS volume opening
+cryptsetup open /dev/nvme0n1p2 cryptroot
 # - C06: Crypttab.initramfs creation
 # 
 # ### [D] Filesystem Phase
@@ -94,6 +97,7 @@ pacstrap -K /mnt/stage base linux linux-firmware btrfs-progs intel-ucode || { ec
 # - E06: Essential tools installation
 pacstrap -K /mnt/stage networkmanager vim sudo man-db || { echo "Pacstrap essentials failed"; exit 1; }
 pacstrap -K /mnt/stage grub efibootmgr || { echo "Pacstrap bootloader tools failed"; exit 1; }
+pacstrap -K /mnt/stage tpm2-tss tpm2-tools
 # - E07: Network tools installation
 # 
 # ### [F] Mount Configuration Phase
@@ -146,10 +150,13 @@ sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard k
 # - H02: Initramfs generation
 mkinitcpio -P || { echo "mkinitcpio failed"; exit 1; }
 # - H03: Bootloader installation
+grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB
+grub-mkconfig -o /boot/grub/grub.cfg
 # - H04: Boot entry creation
 # - H05: Fallback entry creation
 # - H06: Microcode loading setup
 # - H07: Kernel parameter configuration
+rd.luks.name=$(blkid -s UUID -o value /dev/nvme0n1p2)=cryptroot root=/dev/mapper/cryptroot
 #   If using LUKS+TPM2, remember to add kernel params later (e.g., 'rd.luks.name=<UUID>=cryptroot resume=UUID=<swap-uuid>' or 'resume_offset=...').
 # - H08: Resume/hibernation setup
 # 
