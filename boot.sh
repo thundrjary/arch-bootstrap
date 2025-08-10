@@ -106,6 +106,29 @@ sudo sgdisk --load-backup=gpt-nvme0n1-backup.bin /dev/nvme0n1
 sudo sgdisk -e /dev/nvme0n1
 sudo partprobe /dev/nvme0n1
 
+# .TEST01: Sector size consistency verification
+echo "TEST01: Sector size verification"
+blockdev --getss /dev/nvme0n1     # Should be 512
+blockdev --getpbsz /dev/nvme0n1   # Should be 4096
+fdisk -l /dev/nvme0n1 | grep "Sector size"
+
+# .TEST02: Partition alignment verification  
+echo "TEST02: Partition alignment verification"
+sgdisk -A 1 /dev/nvme0n1    # ESP alignment check
+sgdisk -A 2 /dev/nvme0n1    # Root alignment check
+sgdisk -A 3 /dev/nvme0n1    # Swap alignment check
+parted /dev/nvme0n1 align-check optimal 1
+parted /dev/nvme0n1 align-check optimal 2
+parted /dev/nvme0n1 align-check optimal 3
+
+# .TEST03: Size verification (multiple tools)
+echo "TEST03: Partition size verification"
+lsblk -bno SIZE /dev/nvme0n1p1    # ESP size in bytes
+blockdev --getsize64 /dev/nvme0n1p1
+sgdisk -i 1 /dev/nvme0n1 | grep "size"
+lsblk -bno SIZE /dev/nvme0n1p2    # Root size in bytes
+lsblk -bno SIZE /dev/nvme0n1p3    # Swap size in bytes
+
 
 # [C] ENCRYPTION PHASE
 # --------------------
@@ -141,6 +164,21 @@ EOF
 LUKS_UUID=$(blkid -s UUID -o value /dev/nvme0n1p2)
 [ -z "$LUKS_UUID" ] && { echo "ERROR: Could not determine LUKS UUID"; exit 1; }
 echo "LUKS UUID: $LUKS_UUID"
+
+# .TEST04: LUKS headers verification
+echo "TEST04: LUKS configuration verification"
+cryptsetup luksDump /dev/nvme0n1p2 | grep -E "(Version|Cipher|Hash|PBKDF)"
+cryptsetup luksDump /dev/nvme0n1p3 | grep -E "(Version|Cipher|Hash|PBKDF)"
+
+# .TEST05: Key slot verification
+echo "TEST05: LUKS key slot verification"
+cryptsetup luksDump /dev/nvme0n1p2 | grep -A5 "Keyslots"
+cryptsetup luksDump /dev/nvme0n1p3 | grep -A5 "Keyslots"
+
+# .TEST06: Encryption strength verification
+echo "TEST06: PBKDF timing verification"
+cryptsetup luksDump /dev/nvme0n1p2 | grep "Iteration time"
+cryptsetup luksDump /dev/nvme0n1p3 | grep "Iteration time"
 
 
 # [D] FILESYSTEM PHASE
@@ -189,6 +227,44 @@ for mount_point in /mnt/stage /mnt/stage/efi /mnt/stage/home /mnt/stage/var /mnt
     mountpoint -q "$mount_point" || { echo "ERROR: $mount_point not mounted"; exit 1; }
 done
 echo "All mounts successful"
+
+# .TEST07: UUID cross-verification
+echo "TEST07: UUID consistency verification"
+blkid /dev/nvme0n1p1   # ESP UUID
+blkid /dev/nvme0n1p2   # LUKS root UUID  
+blkid /dev/nvme0n1p3   # LUKS swap UUID
+blkid /dev/mapper/cryptroot   # Btrfs UUID
+blkid /dev/mapper/cryptswap   # Swap UUID
+
+# .TEST08: Btrfs filesystem verification
+echo "TEST08: Btrfs verification"
+btrfs filesystem show /dev/mapper/cryptroot
+btrfs subvolume list /mnt/stage
+btrfs filesystem usage /mnt/stage
+
+# .TEST09: Mount options verification
+echo "TEST09: Mount options verification"
+mount | grep /mnt/stage
+findmnt /mnt/stage -o SOURCE,TARGET,FSTYPE,OPTIONS
+
+# .TEST10: ESP filesystem check
+echo "TEST10: ESP filesystem verification"
+fsck.fat -v /dev/nvme0n1p1
+
+# .TEST11: Size accounting verification
+echo "TEST11: Partition size math verification"
+TOTAL=$(blockdev --getsize64 /dev/nvme0n1)
+ESP=$(blockdev --getsize64 /dev/nvme0n1p1) 
+ROOT=$(blockdev --getsize64 /dev/nvme0n1p2)
+SWAP=$(blockdev --getsize64 /dev/nvme0n1p3)
+echo "Total: $TOTAL, Used: $((ESP + ROOT + SWAP)), Free: $((TOTAL - ESP - ROOT - SWAP))"
+echo "OP space: $((TOTAL - ESP - ROOT - SWAP)) bytes = $(((TOTAL - ESP - ROOT - SWAP) / 1024 / 1024 / 1024)) GiB"
+
+# Reminder for base install
+echo "pacstrap /mnt base linux linux-headers linux-lts linux-lts-headers \\"
+echo "               linux-firmware mkinitcpio btrfs-progs cryptsetup \\"
+echo "               networkmanager dosfstools util-linux gptfdisk \\"
+echo "               intel-ucode   # or amd-ucode depending on CPU"
 
 
 # [E] SYSTEM INSTALLATION PHASE
@@ -240,6 +316,11 @@ sudo genfstab -U /mnt/stage | sudo tee -a /mnt/stage/etc/fstab
 
 # .F06: Mount option verification
 grep -q 'subvolid=' /mnt/stage/etc/fstab && { echo "CRITICAL: fstab contains subvolid entries!"; exit 1; }
+
+# .TEST12: fstab and crypttab UUID consistency
+echo "TEST12: Configuration file UUID verification"
+grep UUID /mnt/stage/etc/fstab
+grep UUID /mnt/stage/etc/crypttab.initramfs
 
 
 # [G] SYSTEM CONFIGURATION PHASE
@@ -370,6 +451,26 @@ EOF
 # .H08: Resume/hibernation setup
 # (Handled above in boot entries with resume=UUID)
 
+# .TEST13: systemd-boot installation verification
+echo "TEST13: systemd-boot installation verification"
+test -f /mnt/stage/boot/EFI/systemd/systemd-bootx64.efi && echo "systemd-boot: OK"
+test -f /mnt/stage/boot/loader/loader.conf && echo "loader.conf: OK"
+
+# .TEST14: Kernel/initrd presence verification
+echo "TEST14: Boot file presence verification"
+ls -la /mnt/stage/boot/{vmlinuz-*,initramfs-*,intel-ucode.img}
+
+# .TEST15: Boot entry syntax verification
+echo "TEST15: Boot entry configuration verification"
+for entry in /mnt/stage/boot/loader/entries/*.conf; do
+    echo "Checking $entry:"
+    grep -E "^(title|linux|initrd|options)" "$entry"
+done
+
+# .TEST16: Boot entry UUID consistency
+echo "TEST16: Boot entry UUID verification"
+grep UUID /mnt/stage/boot/loader/entries/*.conf
+
 
 # [I] SECURITY CONFIGURATION PHASE
 # --------------------------------
@@ -392,6 +493,11 @@ if [ "$TPM2_AVAILABLE" = true ] && systemd-cryptenroll --tpm2-device=list >/dev/
     systemd-cryptenroll /dev/nvme0n1p2 --tpm2-device=auto --tpm2-pcrs=0+7
     echo "TPM2 enrollment successful"
     cryptsetup luksDump /dev/nvme0n1p2 | grep -q "tpm2" && echo "TPM2 token verified in LUKS header" || echo "Warning: TPM2 token not found in LUKS header"
+    
+    # .TEST17: TPM2 token verification
+    echo "TEST17: TPM2 token verification"
+    cryptsetup luksDump /dev/nvme0n1p2 | grep -A10 "Tokens"
+    systemd-cryptenroll /dev/nvme0n1p2 --list
 else
     echo "Using passphrase-only unlock"
 fi
@@ -520,6 +626,25 @@ for service in NetworkManager fstrim.timer systemd-timesyncd tlp bluetooth getty
 done
 
 echo "Pre-reboot verification completed successfully"
+
+# .TEST18: File permissions verification
+echo "TEST18: Security file permissions verification"
+ls -la /mnt/stage/etc/crypttab.initramfs
+ls -la /mnt/stage/boot/loader/
+
+# .TEST19: Final comprehensive verification
+echo "TEST19: Final system state verification"
+echo "=== Partition Summary ==="
+lsblk /dev/nvme0n1
+echo "=== Mount Summary ==="
+findmnt | grep /mnt/stage
+echo "=== LUKS Summary ==="
+cryptsetup status cryptroot
+cryptsetup status cryptswap
+echo "=== Boot Files Summary ==="
+ls -la /mnt/stage/boot/loader/entries/
+echo "=== Subvolume Summary ==="
+btrfs subvolume list /mnt/stage
 
 
 # [L] REBOOT PHASE
