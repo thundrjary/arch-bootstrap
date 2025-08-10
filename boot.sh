@@ -205,9 +205,9 @@ reflector --country US --latest 50 --protocol https --sort rate --save /etc/pacm
 # E03–E08: All base system, tools, drivers, firmware, and extras
 pacstrap -K /mnt/stage \
     base base-devel btrfs-progs \             # .E03 Base system + filesystem tools
-    linux linux-firmware intel-ucode \        # .E03 Kernel + firmware + microcode
+    linux linux-headers linux-lts linux-lts-headers linux-firmware intel-ucode \        # .E03 Kernel + firmware + microcode
     vim nano sudo man-db man-pages texinfo \       # .E04 Essential system tools + editors
-    grub efibootmgr \                         # .E05 Bootloader & EFI tools
+    efibootmgr \                              # .E05 EFI boot management tools
     tpm2-tss tpm2-tools \                     # .E06 Security & TPM support
     networkmanager bluez bluez-utils \        # .E07 Networking & Bluetooth
     mesa vulkan-intel intel-media-driver \    # .E08 Graphics & video drivers
@@ -222,7 +222,7 @@ pacstrap -K /mnt/stage \
 echo "Verifying package installation..."
 arch-chroot /mnt/stage pacman -Qqe > /tmp/installed-packages.txt
 echo "Installed $(wc -l < /tmp/installed-packages.txt) packages"
-for pkg in base linux grub networkmanager; do
+for pkg in base linux linux-lts networkmanager; do
     arch-chroot /mnt/stage pacman -Qi $pkg >/dev/null || { echo "ERROR: Critical package $pkg not installed"; exit 1; }
 done
 echo "Critical packages verified"
@@ -284,39 +284,91 @@ EOF
 # .H01: Initramfs hook configuration
 LUKS_UUID=$(blkid -s UUID -o value /dev/nvme0n1p2)
 printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$LUKS_UUID" > /etc/crypttab.initramfs
-sed -i \
-  -e 's/^#\?COMPRESSION=.*/COMPRESSION="zstd"/' \
-  -e 's/^MODULES=.*/MODULES=(btrfs)/' \
-  -e 's/^HOOKS=.*/HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt plymouth filesystems fsck)/' \
-  /etc/mkinitcpio.conf
+
+# Install intel-ucode
+pacman -Sy --noconfirm intel-ucode
+
+# Tuning: prefer RAM over swap, enable TRIM, enable time sync
+printf "vm.swappiness=10\n" > /etc/sysctl.d/99-sysctl.conf
+systemctl enable --now fstrim.timer
+systemctl enable systemd-timesyncd
+
+# mkinitcpio hooks for systemd initramfs with sd-encrypt + resume
+sed -i 's/^HOOKS=.*/HOOKS=(base systemd autodetect modconf kms keyboard sd-vconsole block sd-encrypt resume filesystems fsck)/' /etc/mkinitcpio.conf
 
 # .H02: Initramfs generation
 mkinitcpio -P
 
-# .H03: Bootloader installation
-grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB --recheck
-[ -f /efi/EFI/GRUB/grubx64.efi ] || { echo "ERROR: GRUB installation failed"; exit 1; }
+# .H03: Bootloader installation - systemd-boot instead of GRUB
+bootctl install
 
 # .H04: Boot entry creation
+# UUIDs for cryptswap (resume) — adjust if different
+SWAP_UUID=$(blkid -s UUID -o value /dev/mapper/cryptswap)
+
+# Loader config
+cat >/boot/loader/loader.conf <<'EOF'
+default  arch-main.conf
+timeout  3
+editor   no
+EOF
+
+# Main entries (@main)
+cat >/boot/loader/entries/arch-main.conf <<EOF
+title   Arch Linux (@main)
+linux   /vmlinuz-linux
+initrd  /intel-ucode.img       # or /amd-ucode.img
+initrd  /initramfs-linux.img
+options root=/dev/mapper/cryptroot rootflags=subvol=@main rw resume=UUID=${SWAP_UUID} loglevel=3
+EOF
+
+cat >/boot/loader/entries/arch-lts.conf <<EOF
+title   Arch Linux LTS (@main)
+linux   /vmlinuz-linux-lts
+initrd  /intel-ucode.img       # or /amd-ucode.img
+initrd  /initramfs-linux-lts.img
+options root=/dev/mapper/cryptroot rootflags=subvol=@main rw resume=UUID=${SWAP_UUID} loglevel=3
+EOF
+
 # .H05: Fallback entry creation
+# Sandbox entries (@sandbox)
+cat >/boot/loader/entries/arch-sandbox.conf <<EOF
+title   Arch Linux (@sandbox)
+linux   /vmlinuz-linux
+initrd  /intel-ucode.img       # or /amd-ucode.img
+initrd  /initramfs-linux.img
+options root=/dev/mapper/cryptroot rootflags=subvol=@sandbox rw resume=UUID=${SWAP_UUID} loglevel=3
+EOF
+
+cat >/boot/loader/entries/arch-sandbox-lts.conf <<EOF
+title   Arch Linux LTS (@sandbox)
+linux   /vmlinuz-linux-lts
+initrd  /intel-ucode.img       # or /amd-ucode.img
+initrd  /initramfs-linux-lts.img
+options root=/dev/mapper/cryptroot rootflags=subvol=@sandbox rw resume=UUID=${SWAP_UUID} loglevel=3
+EOF
+
+# Fallback entries
+cat >/boot/loader/entries/arch-linux-fallback.conf <<EOF
+title   Arch Linux (fallback)
+linux   /vmlinuz-linux
+initrd  /intel-ucode.img       # or /amd-ucode.img
+initrd  /initramfs-linux-fallback.img
+options root=/dev/mapper/cryptroot rootflags=subvol=@main rw resume=UUID=${SWAP_UUID}
+EOF
+
+cat >/boot/loader/entries/arch-linux-lts-fallback.conf <<EOF
+title   Arch Linux LTS (fallback)
+linux   /vmlinuz-linux-lts
+initrd  /intel-ucode.img       # or /amd-ucode.img
+initrd  /initramfs-linux-lts-fallback.img
+options root=/dev/mapper/cryptroot rootflags=subvol=@main rw resume=UUID=${SWAP_UUID}
+EOF
+
 # .H06: Microcode loading setup
 # .H07: Kernel parameter configuration
-cp /etc/default/grub /etc/default/grub.bak
-sed -i "s/^GRUB_CMDLINE_LINUX=\"/GRUB_CMDLINE_LINUX=\"rd.luks.name=${LUKS_UUID}=cryptroot root=\/dev\/mapper\/cryptroot rootflags=subvol=@main quiet splash /" /etc/default/grub
-grep -q "rd.systemd.show_status" /etc/default/grub || \
-  sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="rd.systemd.show_status=auto /' /etc/default/grub
-
-# Verify LUKS UUID consistency before generating config
-LUKS_UUID_GRUB=$(grep "rd.luks.name=" /etc/default/grub | sed 's/.*rd.luks.name=\([^=]*\)=.*/\1/')
-LUKS_UUID_ACTUAL=$(blkid -s UUID -o value /dev/nvme0n1p2)
-[ "$LUKS_UUID_GRUB" = "$LUKS_UUID_ACTUAL" ] || { 
-    echo "ERROR: LUKS UUID mismatch - GRUB: $LUKS_UUID_GRUB, Actual: $LUKS_UUID_ACTUAL"
-    exit 1
-}
-
-grub-mkconfig -o /boot/grub/grub.cfg
-
 # .H08: Resume/hibernation setup
+# (Handled above in boot entries with resume=UUID)
 
 
 # [I] SECURITY CONFIGURATION PHASE
@@ -348,14 +400,9 @@ fi
 # [J] SYSTEM OPTIMIZATION PHASE
 # -----------------------------
 
-# .J01: Swappiness tuning
-echo "vm.swappiness=10" > /etc/sysctl.d/99-swappiness.conf
-
-# .J02: TRIM timer enablement
-systemctl enable fstrim.timer
-
-# .J03: Time synchronization service
-systemctl enable systemd-timesyncd 
+# .J01: Swappiness tuning (moved to H)
+# .J02: TRIM timer enablement (moved to H)
+# .J03: Time synchronization service (moved to H)
 
 # .J04: Performance mount options
 
@@ -374,11 +421,10 @@ passwd "\$USERNAME"
 echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/wheel
 
 # .J08: Snapper setup
-pacman -S --needed --noconfirm snapper snapper-support snap-pac grub-btrfs
+pacman -S --needed --noconfirm snapper snapper-support snap-pac
 snapper -c root create-config /
 snapper -c home create-config /home
 snapper -c var create-config /var
-systemctl enable grub-btrfs.path
 
 # .J09: Bluetooth setup
 systemctl enable bluetooth
@@ -417,21 +463,7 @@ USERNAME=$(arch-chroot /mnt/stage getent passwd | awk -F: '$3 >= 1000 && $1 != "
 
 # .J13: Add sandbox boot entry and autologin setup
 arch-chroot /mnt/stage /bin/bash <<CHROOT_EOF3
-# Add sandbox grub entry
-LUKS_UUID=\$(blkid -s UUID -o value /dev/nvme0n1p2)
-ROOT_UUID=\$(blkid -s UUID -o value /dev/mapper/cryptroot)
-
-cat >> /etc/grub.d/40_custom <<EOF
-menuentry 'Arch Linux (sandbox)' --class arch --class gnu-linux --class gnu --class os {
-    insmod gzio
-    insmod part_gpt
-    insmod btrfs
-    search --no-floppy --fs-uuid --set=root \$ROOT_UUID
-    linux   /vmlinuz-linux rd.luks.name=\$LUKS_UUID=cryptroot root=/dev/mapper/cryptroot rootflags=subvol=@sandbox quiet splash
-    initrd  /initramfs-linux.img
-}
-EOF
-grub-mkconfig -o /boot/grub/grub.cfg
+# Sandbox boot entries are created in section H with systemd-boot
 CHROOT_EOF3
 
 # .J14: Setup autologin (outside chroot to avoid systemctl issues)
@@ -461,11 +493,12 @@ fi
 # .K01: Configuration file review
 # .K02: UUID verification
 LUKS_UUID_CHECK=$(blkid -s UUID -o value /dev/nvme0n1p2)
-grep -q "$LUKS_UUID_CHECK" /mnt/stage/etc/default/grub || { echo "ERROR: LUKS UUID mismatch in GRUB config"; exit 1; }
+SWAP_UUID_CHECK=$(blkid -s UUID -o value /dev/mapper/cryptswap)
+grep -q "resume=UUID=${SWAP_UUID_CHECK}" /mnt/stage/boot/loader/entries/arch-main.conf || { echo "ERROR: Swap UUID mismatch in systemd-boot config"; exit 1; }
 
 # .K03: Bootloader entry validation
-[ -f /mnt/stage/boot/grub/grub.cfg ] || { echo "ERROR: GRUB config not found"; exit 1; }
-grep -q "Arch Linux" /mnt/stage/boot/grub/grub.cfg || { echo "ERROR: No Arch Linux entries in GRUB config"; exit 1; }
+[ -f /mnt/stage/boot/loader/loader.conf ] || { echo "ERROR: systemd-boot config not found"; exit 1; }
+[ -f /mnt/stage/boot/loader/entries/arch-main.conf ] || { echo "ERROR: No main boot entry found"; exit 1; }
 
 # .K04: ESP space check
 ESP_USAGE=$(df /mnt/stage/efi | awk 'NR==2 {print $5}' | tr -d '%')
@@ -541,10 +574,10 @@ sudo pacman -Syu
 # --------------------------------
 
 # .N01: GPT restore procedures
-# sgdisk --load-backup=/tmp/gpt-backup.txt /dev/nvme0n1
+# sgdisk --load-backup=gpt-nvme0n1-backup.bin /dev/nvme0n1
 
 # .N02: Bootloader recovery
-# arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB --recheck
+# arch-chroot /mnt bootctl install
 
 # .N03: UUID mismatch fixes
 # .N04: Kernel update procedures
