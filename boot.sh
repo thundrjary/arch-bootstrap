@@ -48,10 +48,10 @@ sudo sgdisk --print /dev/nvme0n1 || { echo "Failed to print partition table"; ex
 cryptsetup luksFormat --type luks2 /dev/nvme0n1p2
 # - C02: PBKDF parameter tuning
 # - C03: TPM2 enrollment
-systemd-cryptenroll /dev/nvme0n1p2 --tpm2-device=auto --tpm2-pcrs=0+7
 # - C04: Passphrase configuration
 # - C05: LUKS volume opening
-cryptsetup open /dev/nvme0n1p2 cryptroot
+cryptsetup open /dev/nvme0n1p2 cryptroot || { echo "Failed to open LUKS container"; exit 1; }
+[ -b /dev/mapper/cryptroot ] || { echo "ERROR: Encrypted device /dev/mapper/cryptroot not available"; exit 1; }
 # - C06: Crypttab.initramfs creation
 # 
 # ### [D] Filesystem Phase
@@ -135,7 +135,9 @@ echo "127.0.1.1 lollypop.localdomain lollypop" >> /etc/hosts || { echo "Failed t
 # ### [H] Boot Configuration Phase
 # - H01: Initramfs hook configuration
 #   -- Base mkinitcpio config with optional LUKS+TPM2 path. Toggle by exporting LUKS_TPM2=1 before running.
-cp -a /etc/mkinitcpio.conf /etc/mkinitcpio.conf.bak
+LUKS_UUID=$(blkid -s UUID -o value /dev/nvme0n1p2) || { echo "Failed to get LUKS UUID"; exit 1; }
+[ -z "$LUKS_UUID" ] && { echo "ERROR: Could not determine LUKS UUID"; exit 1; }
+printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$LUKS_UUID" > /etc/crypttab.initramfs || { echo "Failed to create crypttab.initramfs"; exit 1; }
 #   -- Use zstd compression
 sed -i 's/^#*COMPRESSION=.*/COMPRESSION="zstd"/' /etc/mkinitcpio.conf
 #   -- Ensure required modules (add btrfs for root FS)
@@ -151,14 +153,19 @@ printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$LUKS_UUID" > /etc/crypttab.ini
 sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)/' /etc/mkinitcpio.conf
 # - H02: Initramfs generation
 mkinitcpio -P || { echo "mkinitcpio failed"; exit 1; }
-# - H03: Bootloader installation
-grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB
-grub-mkconfig -o /boot/grub/grub.cfg
+# H03: Bootloader installation
+grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB || { echo "Failed to install GRUB bootloader"; exit 1; }
+grub-mkconfig -o /boot/grub/grub.cfg || { echo "Failed to generate GRUB config"; exit 1; }
+[ -f /boot/grub/grub.cfg ] || { echo "ERROR: GRUB config file not created"; exit 1; }
 # - H04: Boot entry creation
 # - H05: Fallback entry creation
 # - H06: Microcode loading setup
-# - H07: Kernel parameter configuration
-rd.luks.name=$(blkid -s UUID -o value /dev/nvme0n1p2)=cryptroot root=/dev/mapper/cryptroot
+# H07: Kernel parameter configuration
+LUKS_UUID=$(blkid -s UUID -o value /dev/nvme0n1p2) || { echo "Failed to get LUKS UUID for kernel params"; exit 1; }
+[ -z "$LUKS_UUID" ] && { echo "ERROR: Could not determine LUKS UUID for kernel params"; exit 1; }
+cp /etc/default/grub /etc/default/grub.bak || { echo "Failed to backup GRUB config"; exit 1; }
+sed -i "s/^GRUB_CMDLINE_LINUX=\"/GRUB_CMDLINE_LINUX=\"rd.luks.name=${LUKS_UUID}=cryptroot root=\/dev\/mapper\/cryptroot /" /etc/default/grub || { echo "Failed to add kernel parameters to GRUB"; exit 1; }
+grep -q "rd.luks.name=" /etc/default/grub || { echo "ERROR: Kernel parameters not added to GRUB config"; exit 1; }
 #   If using LUKS+TPM2, remember to add kernel params later (e.g., 'rd.luks.name=<UUID>=cryptroot resume=UUID=<swap-uuid>' or 'resume_offset=...').
 # - H08: Resume/hibernation setup
 # 
@@ -170,7 +177,15 @@ passwd || { echo "Failed to set root password"; exit 1; }
 # - I03: Key enrollment
 # - I04: Kernel signing
 # - I05: UKI creation (optional)
-# - I06: TPM2 configuration
+# I06: TPM2 configuration
+# -- Check TPM2 availability first
+systemd-cryptenroll --tpm2-device=list > /dev/null 2>&1 || { echo "WARNING: No TPM2 device found, skipping enrollment"; }
+if systemd-cryptenroll --tpm2-device=list > /dev/null 2>&1; then
+    systemd-cryptenroll /dev/nvme0n1p2 --tpm2-device=auto --tpm2-pcrs=0+7 || { echo "Failed to enroll TPM2 for LUKS"; exit 1; }
+    echo "TPM2 enrollment successful"
+else
+    echo "TPM2 not available - system will require passphrase at boot"
+fi
 # 
 # ### [J] System Optimization Phase
 # - J01: Swappiness tuning
