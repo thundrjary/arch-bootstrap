@@ -129,33 +129,20 @@ echo "127.0.1.1 lollypop.localdomain lollypop" >> /etc/hosts || { echo "Failed t
 # ### [H] Boot Configuration Phase
 # - H01: Initramfs hook configuration
 #   -- Base mkinitcpio config with optional LUKS+TPM2 path. Toggle by exporting LUKS_TPM2=1 before running.
-cp -a /etc/mkinitcpio.conf /etc/mkinitcpio.conf.bak || { echo "Failed to back up /etc/mkinitcpio.conf"; exit 1; }
+cp -a /etc/mkinitcpio.conf /etc/mkinitcpio.conf.bak
 #   -- Use zstd compression
-sed -i 's/^#*COMPRESSION=.*/COMPRESSION="zstd"/' /etc/mkinitcpio.conf || { echo "Failed to set COMPRESSION=zstd"; exit 1; }
+sed -i 's/^#*COMPRESSION=.*/COMPRESSION="zstd"/' /etc/mkinitcpio.conf
 #   -- Ensure required modules (add btrfs for root FS)
-if grep -q '^MODULES=' /etc/mkinitcpio.conf; then
-  sed -i 's/^MODULES=.*/MODULES=(btrfs)/' /etc/mkinitcpio.conf || { echo "Failed to set MODULES"; exit 1; }
-else
-  echo 'MODULES=(btrfs)' >> /etc/mkinitcpio.conf || { echo "Failed to append MODULES"; exit 1; }
-fi
+sed -i 's/^MODULES=.*/MODULES=(btrfs)/' /etc/mkinitcpio.conf
+echo 'MODULES=(btrfs)' >> /etc/mkinitcpio.conf
 #   -- Set HOOKS depending on encryption choice
-if [ "${LUKS_TPM2:-0}" -eq 1 ]; then
-  # -- systemd-based initramfs with sd-encrypt and resume
-  sed -i 's/^HOOKS=.*/HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt resume filesystems fsck)/' /etc/mkinitcpio.conf || { echo "Failed to set HOOKS (LUKS+TPM2)"; exit 1; }
-  # -- Prepare crypttab for TPM2 auto-unlock (run after luksFormat so UUID exists)
-  ROOT_PART=${ROOT_PART:-/dev/nvme0n1p2}
-  LUKS_UUID=$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null || true)
-  if [ -n "$LUKS_UUID" ]; then
-    printf 'cryptroot UUID=%s - tpm2-device=auto
-' "$LUKS_UUID" > /etc/crypttab.initramfs || { echo "Failed to write /etc/crypttab.initramfs"; exit 1; }
-  else
-    echo "WARN: LUKS UUID not found yet; create /etc/crypttab.initramfs after luksFormat." >&2
-  fi
-else
-  # -- classic udev-based initramfs without encryption
-  sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)/' /etc/mkinitcpio.conf || { echo "Failed to set HOOKS (no encryption)"; exit 1; }
-fi
-
+# -- systemd-based initramfs with sd-encrypt and resume
+sed -i 's/^HOOKS=.*/HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt resume filesystems fsck)/' /etc/mkinitcpio.conf
+# -- Prepare crypttab for TPM2 auto-unlock (run after luksFormat so UUID exists)
+blkid -s UUID -o value "$ROOT_PART"
+printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$LUKS_UUID" > /etc/crypttab.initramfs
+# -- classic udev-based initramfs without encryption
+sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)/' /etc/mkinitcpio.conf
 # - H02: Initramfs generation
 mkinitcpio -P || { echo "mkinitcpio failed"; exit 1; }
 # - H03: Bootloader installation
