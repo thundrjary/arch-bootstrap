@@ -58,10 +58,12 @@ cryptsetup open /dev/nvme0n1p2 cryptroot
 # - D01: ESP formatting (FAT32)
 mkfs.fat -F32 /dev/nvme0n1p1 || { echo "Failed to format ESP partition"; exit 1; }
 # - D02: Root filesystem creation
-mkfs.btrfs -f /dev/nvme0n1p2 || { echo "Failed to format root partition with Btrfs"; exit 1; }
+# OLD: mkfs.btrfs -f /dev/nvme0n1p2 || { echo "Failed to format root partition with Btrfs"; exit 1; }
+mkfs.btrfs -f /dev/mapper/cryptroot || { echo "Failed to format encrypted root partition with Btrfs"; exit 1; }
 # - D03: Swap space initialization
 # - D04: Btrfs subvolume creation
-mount /dev/nvme0n1p2 /mnt/stage || { echo "Failed to mount root partition"; exit 1; }
+# OLD mount /dev/nvme0n1p2 /mnt/stage || { echo "Failed to mount root partition"; exit 1; }
+mount /dev/mapper/cryptroot /mnt/stage || { echo "Failed to mount encrypted root partition"; exit 1; }
 btrfs subvolume create /mnt/stage/@main || { echo "Failed to create subvolume @main"; exit 1; }
 btrfs subvolume create /mnt/stage/@main-home || { echo "Failed to create subvolume @main-home"; exit 1; }
 btrfs subvolume create /mnt/stage/@sandbox || { echo "Failed to create subvolume @sandbox"; exit 1; }
@@ -75,15 +77,15 @@ btrfs subvolume create /mnt/stage/@user-local || { echo "Failed to create subvol
 umount /mnt/stage || { echo "Failed to unmount /mnt/stage"; exit 1; }
 # - D05: Compression configuration
 # - D06: Mount option configuration
-mount -o compress=zstd:3,noatime,commit=120,ssd,discard=async,space_cache=v2,autodefrag,subvol=@main /dev/nvme0n1p2 /mnt/stage || { echo "Failed to mount @main"; exit 1; }
-mkdir -p /mnt/stage/{efi,home,.snapshots,var,tmp} || { echo "Failed to create directories"; exit 1; }
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@main-home /dev/nvme0n1p2 /mnt/stage/home || { echo "Failed to mount @main-home"; exit 1; }
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@sandbox /dev/nvme0n1p2 /mnt/stage/.snapshots || { echo "Failed to mount @sandbox"; exit 1; }
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@var /dev/nvme0n1p2 /mnt/stage/var || { echo "Failed to mount @var"; exit 1; }
+mount -o compress=zstd:3,noatime,commit=120,ssd,discard=async,space_cache=v2,autodefrag,subvol=@main /dev/mapper/cryptroot /mnt/stage || { echo "Failed to mount @main"; exit 1; }
+mkdir -p /mnt/stage/{efi,home,var,tmp} || { echo "Failed to create directories"; exit 1; }
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@main-home /dev/mapper/cryptroot /mnt/stage/home || { echo "Failed to mount @main-home"; exit 1; }
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@sandbox /dev/mapper/cryptroot /mnt/stage/ || { echo "Failed to mount @sandbox"; exit 1; }
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@var /dev/mapper/cryptroot /mnt/stage/var || { echo "Failed to mount @var"; exit 1; }
 mkdir -p /mnt/stage/var/{log,cache} || { echo "Failed to create /mnt/stage/var subdirectories"; exit 1; }
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@log /dev/nvme0n1p2 /mnt/stage/var/log || { echo "Failed to mount @log"; exit 1; }
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@cache /dev/nvme0n1p2 /mnt/stage/var/cache || { echo "Failed to mount @cache"; exit 1; }
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@tmp /dev/nvme0n1p2 /mnt/stage/tmp || { echo "Failed to mount @tmp"; exit 1; }
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@log /dev/mapper/cryptroot /mnt/stage/var/log || { echo "Failed to mount @log"; exit 1; }
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@cache /dev/mapper/cryptroot /mnt/stage/var/cache || { echo "Failed to mount @cache"; exit 1; }
+mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@tmp /dev/mapper/cryptroot /mnt/stage/tmp || { echo "Failed to mount @tmp"; exit 1; }
 mount /dev/nvme0n1p1 /mnt/stage/efi || { echo "Failed to mount ESP at /mnt/stage/efi"; exit 1; }
 # 
 # ### [E] System Installation Phase
