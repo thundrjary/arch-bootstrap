@@ -35,13 +35,13 @@ pacman-key --init && pacman-key --populate archlinux
 sgdisk --zap-all /dev/nvme0n1
 # - B06: Partition alignment configuration
 # - B07: ESP partition creation
-sudo sgdisk --new=1:0:+512M --typecode=1:EF00 /dev/nvme0n1
+sgdisk --new=1:0:+512M --typecode=1:EF00 /dev/nvme0n1
 # - B08: Root partition creation
-sudo sgdisk --new=2:0:0 --typecode=3:8300 /dev/nvme0n1
+sgdisk --new=2:0:0 --typecode=2:8300 /dev/nvme0n1
 # - B09: Swap partition creation
 # - B10: Over-provisioning space allocation
 # - B11: GPT backup creation
-sudo sgdisk --print /dev/nvme0n1
+sgdisk --print /dev/nvme0n1 
 # 
 # ### [C] Encryption Phase
 # - C01: LUKS container creation
@@ -58,11 +58,9 @@ cryptsetup open /dev/nvme0n1p2 cryptroot
 # - D01: ESP formatting (FAT32)
 mkfs.fat -F32 /dev/nvme0n1p1
 # - D02: Root filesystem creation
-# OLD: mkfs.btrfs -f /dev/nvme0n1p2
 mkfs.btrfs -f /dev/mapper/cryptroot
 # - D03: Swap space initialization
 # - D04: Btrfs subvolume creation
-# OLD mount /dev/nvme0n1p2 /mnt/stage
 mount /dev/mapper/cryptroot /mnt/stage
 btrfs subvolume create /mnt/stage/@main
 btrfs subvolume create /mnt/stage/@main-home
@@ -129,43 +127,42 @@ echo "KEYMAP=us" > /etc/vconsole.conf
 # - G07: Hostname configuration
 echo "lollypop" > /etc/hostname
 # - G08: Network configuration
+systemctl enable NetworkManager
 # - G09: Hosts file setup
-echo "127.0.1.1 lollypop.localdomain lollypop" >> /etc/hosts
+echo "127.0.0.1 localhost" >> /etc/hosts
+echo "::1 localhost" >> /etc/hosts
+echo "127.0.1.1 lollypop.localdomain lollypop"
+
 # 
 # ### [H] Boot Configuration Phase
 # - H01: Initramfs hook configuration
-#   -- Base mkinitcpio config with optional LUKS+TPM2 path. Toggle by exporting LUKS_TPM2=1 before running.
+cp -a /etc/mkinitcpio.conf /etc/mkinitcpio.conf.bak
 LUKS_UUID=$(blkid -s UUID -o value /dev/nvme0n1p2)
 [ -z "$LUKS_UUID" ] && { echo "ERROR: Could not determine LUKS UUID"; exit 1; }
 printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$LUKS_UUID" > /etc/crypttab.initramfs
-#   -- Use zstd compression
 sed -i 's/^#*COMPRESSION=.*/COMPRESSION="zstd"/' /etc/mkinitcpio.conf
-#   -- Ensure required modules (add btrfs for root FS)
 sed -i 's/^MODULES=.*/MODULES=(btrfs)/' /etc/mkinitcpio.conf
 echo 'MODULES=(btrfs)' >> /etc/mkinitcpio.conf
-#   -- Set HOOKS depending on encryption choice
-# -- systemd-based initramfs with sd-encrypt and resume
 sed -i 's/^HOOKS=.*/HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt resume filesystems fsck)/' /etc/mkinitcpio.conf
-# -- Prepare crypttab for TPM2 auto-unlock (run after luksFormat so UUID exists)
 blkid -s UUID -o value "$ROOT_PART"
 printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$LUKS_UUID" > /etc/crypttab.initramfs
-# -- classic udev-based initramfs without encryption
 sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)/' /etc/mkinitcpio.conf
 # - H02: Initramfs generation
 mkinitcpio -P
-# H03: Bootloader installation
+# - H03: Bootloader installation
 grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB
 grub-mkconfig -o /boot/grub/grub.cfg
 [ -f /boot/grub/grub.cfg ]
 # - H04: Boot entry creation
 # - H05: Fallback entry creation
 # - H06: Microcode loading setup
-# H07: Kernel parameter configuration
+# - H07: Kernel parameter configuration
 LUKS_UUID=$(blkid -s UUID -o value /dev/nvme0n1p2)
 [ -z "$LUKS_UUID" ] && { echo "ERROR: Could not determine LUKS UUID for kernel params"; exit 1; }
 cp /etc/default/grub /etc/default/grub.bak
 sed -i "s/^GRUB_CMDLINE_LINUX=\"/GRUB_CMDLINE_LINUX=\"rd.luks.name=${LUKS_UUID}=cryptroot root=\/dev\/mapper\/cryptroot /" /etc/default/grub
 grep -q "rd.luks.name=" /etc/default/grub
+grub-mkconfig -o /boot/grub/grub.cfg
 #   If using LUKS+TPM2, remember to add kernel params later (e.g., 'rd.luks.name=<UUID>=cryptroot resume=UUID=<swap-uuid>' or 'resume_offset=...').
 # - H08: Resume/hibernation setup
 # 
@@ -177,22 +174,29 @@ passwd
 # - I03: Key enrollment
 # - I04: Kernel signing
 # - I05: UKI creation (optional)
-# I06: TPM2 configuration
-# -- Check TPM2 availability first
+# - I06: TPM2 configuration
 systemd-cryptenroll --tpm2-device=list > /dev/null 2>&1
 if systemd-cryptenroll --tpm2-device=list > /dev/null 2>&1; then
     systemd-cryptenroll /dev/nvme0n1p2 --tpm2-device=auto --tpm2-pcrs=0+7
     echo "TPM2 enrollment successful"
+    cryptsetup luksDump /dev/nvme0n1p2 | grep -q "tpm2" && echo "TPM2 token verified in LUKS header" || echo "Warning: TPM2 token not found in LUKS header"
 else
     echo "TPM2 not available - system will require passphrase at boot"
 fi
 # 
 # ### [J] System Optimization Phase
 # - J01: Swappiness tuning
+echo "vm.swappiness=10" >> /etc/sysctl.d/99-swappiness.conf
 # - J02: TRIM timer enablement
+systemctl enable fstrim.timer
 # - J03: Time synchronization service
+systemctl enable systemd-timesyncd 
 # - J04: Performance mount options
 # - J05: Compression settings
+# - J06: Snapshot setup
+pacman -S snapper grub-btrfs
+snapper -c root create-config /
+systemctl enable grub-btrfs.path
 # 
 # ### [K] Pre-Reboot Verification Phase
 # - K01: Configuration file review
@@ -204,8 +208,12 @@ fi
 # 
 # ### [L] Reboot Phase
 # - L01: Chroot exit
+exit
 # - L02: Partition unmounting
+umount -R /mnt/stage
 # - L03: System restart
+echo "Rebooting.  Please remove installation media."
+reboot
 # - L04: Installation medium removal
 # 
 # ### [M] Post-Installation Phase
