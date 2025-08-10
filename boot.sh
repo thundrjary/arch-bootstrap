@@ -264,15 +264,12 @@ echo "options i915 enable_psr=0" > /etc/modprobe.d/i915.conf
 
 # .J07: Compression settings
 # .J08: Snapshot setup
-pacman -S snapper grub-btrfs
-snapper -c root create-config /
-systemctl enable grub-btrfs.path
-systemctl start grub-btrfs.path
-grub-mkconfig -o /boot/grub/grub.cfg
 pacman -S snapper snapper-support snap-pac grub-btrfs
 snapper -c root create-config /
 snapper -c home create-config /home
 snapper -c var create-config /var
+systemctl enable --now grub-btrfs.path
+grub-mkconfig -o /boot/grub/grub.cfg
 
 # .J09: Create baseline snapshots
 snapper -c root create --description "Baseline Root"
@@ -281,6 +278,10 @@ snapper -c var create --description "Baseline Var"
 
 # .J10: Create snapshot from @main to @sandbox
 btrfs subvolume snapshot /mnt/stage/@main /mnt/stage/@sandbox
+
+# .J11: Bluetooth audio setup
+systemctl enable bluetooth
+systemctl --user enable --now wireplumber
 
 
 # [K] PRE-REBOOT VERIFICATION PHASE
