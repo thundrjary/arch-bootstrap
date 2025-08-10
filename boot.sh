@@ -90,32 +90,52 @@ sudo sgdisk -a 2048 -o /dev/nvme0n1   # 1 MiB alignment
 # .B06: Partition alignment configuration
 # .B07: ESP partition creation
 # ESP 1 GiB starting at 1 MiB
-sudo sgdisk -n 1:2048:+${ESP_GIB}G  -t 1:EF00 -c 1:"ESP" /dev/nvme0n1
+sudo sgdisk -n 1:2048:+1G -t 1:EF00 -c 1:"ESP" /dev/nvme0n1
 
 # .B08: Root partition creation
-sgdisk --new=2:0:0 --typecode=2:8300 --change-name=2:"Linux filesystem" /dev/nvme0n1
+sudo sgdisk -n 2:0:-32G -t 2:8309 -c 2:"cryptroot" /dev/nvme0n1
 
 # .B09: Swap partition creation
+sudo sgdisk -n 3:0:-20G -t 3:8309 -c 3:"cryptswap" /dev/nvme0n1
+
 # .B10: Over-provisioning space allocation
 # .B11: GPT backup creation
-sgdisk --print /dev/nvme0n1
-sgdisk --backup=/tmp/gpt-backup.txt /dev/nvme0n1
+sudo sgdisk -p /dev/nvme0n1
+sudo sgdisk --backup=gpt-nvme0n1-backup.bin /dev/nvme0n1
+sudo sgdisk --load-backup=gpt-nvme0n1-backup.bin /dev/nvme0n1
+sudo sgdisk -e /dev/nvme0n1
+sudo partprobe /dev/nvme0n1
 
 
 # [C] ENCRYPTION PHASE
 # --------------------
 
 # .C01: LUKS container creation
-cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha256 /dev/nvme0n1p2
+# LUKS2 format root (partition 2) with stronger PBKDF
+sudo cryptsetup luksFormat /dev/nvme0n1p2 \
+  --type luks2 --pbkdf argon2id --iter-time 1500 \
+  --cipher aes-xts-plain64 --key-size 512 --hash sha256 --label cryptroot
+# LUKS2 format swap (partition 3) with lighter PBKDF
+sudo cryptsetup luksFormat /dev/nvme0n1p3 \
+  --type luks2 --pbkdf argon2id --iter-time 800 \
+  --cipher aes-xts-plain64 --key-size 512 --hash sha256 --label cryptswap
 
 # .C02: PBKDF parameter tuning
 # .C03: TPM2 enrollment
 # .C04: Passphrase configuration
 # .C05: LUKS volume opening
-cryptsetup open /dev/nvme0n1p2 cryptroot
+# Open LUKS volumes (will prompt twice for passphrase)
+sudo cryptsetup open /dev/nvme0n1p2 cryptroot
+sudo cryptsetup open /dev/nvme0n1p3 cryptswap
 [ -b /dev/mapper/cryptroot ] || { echo "ERROR: Failed to open LUKS volume"; exit 1; }
 
 # .C06: Crypttab.initramfs creation (TPM2 auto-unlock)
+# Write crypttab.initramfs (passphrase mode, luks only)
+sudo mkdir -p /mnt/stage/etc
+sudo tee /mnt/stage/etc/crypttab.initramfs >/dev/null <<'EOF'
+cryptroot UUID=$(blkid -s UUID -o value /dev/nvme0n1p2) none luks
+cryptswap UUID=$(blkid -s UUID -o value /dev/nvme0n1p3) none luks
+EOF
 
 # .C07: Store LUKS UUID for later use
 LUKS_UUID=$(blkid -s UUID -o value /dev/nvme0n1p2)
@@ -127,40 +147,42 @@ echo "LUKS UUID: $LUKS_UUID"
 # --------------------
 
 # .D01: ESP formatting (FAT32)
-mkfs.fat -F32 -n "ESP" /dev/nvme0n1p1
+sudo mkfs.vfat -F32 -n ESP /dev/nvme0n1p1
 # Verify ESP filesystem
 fsck.fat -v /dev/nvme0n1p1 || { echo "ERROR: ESP filesystem verification failed"; exit 1; }
 
 # .D02: Root filesystem creation
-mkfs.btrfs -f -L "ArchRoot" /dev/mapper/cryptroot
+sudo mkfs.btrfs -L archroot -m dup /dev/mapper/cryptroot
 
 # .D03: Swap space initialization
+# Make swap
+sudo mkswap -L swap /dev/mapper/cryptswap
 # .D04: Btrfs subvolume creation
-mkdir -p /mnt/stage
-mount /dev/mapper/cryptroot /mnt/stage
-btrfs subvolume create /mnt/stage/@main
-btrfs subvolume create /mnt/stage/@main-home
-btrfs subvolume create /mnt/stage/@var
-btrfs subvolume create /mnt/stage/@log
-btrfs subvolume create /mnt/stage/@cache
-btrfs subvolume create /mnt/stage/@tmp
-btrfs subvolume create /mnt/stage/@shared
-btrfs subvolume create /mnt/stage/@user-local
-umount /mnt/stage
+# Create subvolumes
+sudo mount /dev/mapper/cryptroot /mnt/stage
+sudo btrfs subvolume create /mnt/stage/@main
+sudo btrfs subvolume create /mnt/stage/@main-home
+sudo btrfs subvolume create /mnt/stage/@var
+sudo btrfs subvolume create /mnt/stage/@log
+sudo btrfs subvolume create /mnt/stage/@cache
+sudo btrfs subvolume create /mnt/stage/@tmp
+sudo btrfs subvolume create /mnt/stage/@shared
+sudo btrfs subvolume create /mnt/stage/@user-local
+sudo umount /mnt/stage
 
 # .D05: Compression configuration
 # .D06: Mount option configuration
-mount -o compress=zstd:3,noatime,commit=120,ssd,discard=async,space_cache=v2,autodefrag,subvol=@main /dev/mapper/cryptroot /mnt/stage
-mkdir -p /mnt/stage/{efi,home,var,tmp,shared,usr/local}
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@main-home   /dev/mapper/cryptroot /mnt/stage/home
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@var         /dev/mapper/cryptroot /mnt/stage/var
-mkdir -p /mnt/stage/var/{log,cache}
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@log         /dev/mapper/cryptroot /mnt/stage/var/log
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@cache       /dev/mapper/cryptroot /mnt/stage/var/cache
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@tmp         /dev/mapper/cryptroot /mnt/stage/tmp
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@shared      /dev/mapper/cryptroot /mnt/stage/shared
-mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@user-local  /dev/mapper/cryptroot /mnt/stage/usr/local
-mount /dev/nvme0n1p1 /mnt/stage/efi
+sudo mount -o compress=zstd:3,noatime,commit=120,ssd,discard=async,space_cache=v2,autodefrag,subvol=@main /dev/mapper/cryptroot /mnt/stage
+sudo mkdir -p /mnt/stage/{efi,home,var,tmp,shared,usr/local}
+sudo mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@main-home   /dev/mapper/cryptroot /mnt/stage/home
+sudo mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@var         /dev/mapper/cryptroot /mnt/stage/var
+sudo mkdir -p /mnt/stage/var/{log,cache}
+sudo mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@log         /dev/mapper/cryptroot /mnt/stage/var/log
+sudo mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@cache       /dev/mapper/cryptroot /mnt/stage/var/cache
+sudo mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@tmp         /dev/mapper/cryptroot /mnt/stage/tmp
+sudo mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@shared      /dev/mapper/cryptroot /mnt/stage/shared
+sudo mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=@user-local  /dev/mapper/cryptroot /mnt/stage/usr/local
+sudo mount /dev/nvme0n1p1 /mnt/stage/efi
 
 # Verify all mounts are successful
 for mount_point in /mnt/stage /mnt/stage/efi /mnt/stage/home /mnt/stage/var /mnt/stage/var/log /mnt/stage/var/cache; do
@@ -214,7 +236,7 @@ echo "Critical packages verified"
 # .F03: Additional mountpoint creation
 # .F04: Swap activation
 # .F05: Fstab generation
-genfstab -U /mnt/stage >> /mnt/stage/etc/fstab
+sudo genfstab -U /mnt/stage | sudo tee -a /mnt/stage/etc/fstab
 
 # .F06: Mount option verification
 grep -q 'subvolid=' /mnt/stage/etc/fstab && { echo "CRITICAL: fstab contains subvolid entries!"; exit 1; }
@@ -476,6 +498,7 @@ echo "Pre-reboot verification completed successfully"
 sync
 umount -R /mnt/stage || { echo "WARNING: Some filesystems couldn't be unmounted cleanly"; }
 cryptsetup close cryptroot || { echo "WARNING: Could not close LUKS volume"; }
+cryptsetup close cryptswap || { echo "WARNING: Could not close swap volume"; }
 
 # .L03: System restart
 echo ""
