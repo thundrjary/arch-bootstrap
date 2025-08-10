@@ -117,23 +117,59 @@ hwclock --systohc || { echo "Failed to set hardware clock"; exit 1; }
 sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen || { echo "Failed to uncomment en_US.UTF-8 in locale.gen"; exit 1; }
 locale-gen || { echo "Failed to generate locale"; exit 1; }
 # - G05: Language configuration
+echo "LANG=en_US.UTF-8" > /etc/locale.conf || { echo "Failed to configure /etc/locale.conf"; exit 1; }
 # - G06: Console configuration persistence
+echo "KEYMAP=us" > /etc/vconsole.conf || { echo "Failed to configure /etc/vconsole.conf"; exit 1; }
 # - G07: Hostname configuration
+echo "lollypop" > /etc/hostname || { echo "Failed to set hostname"; exit 1; }
 # - G08: Network configuration
 # - G09: Hosts file setup
+echo "127.0.1.1 lollypop.localdomain lollypop" >> /etc/hosts || { echo "Failed to configure /etc/hosts"; exit 1; }
 # 
 # ### [H] Boot Configuration Phase
 # - H01: Initramfs hook configuration
+#   -- Base mkinitcpio config with optional LUKS+TPM2 path. Toggle by exporting LUKS_TPM2=1 before running.
+cp -a /etc/mkinitcpio.conf /etc/mkinitcpio.conf.bak || { echo "Failed to back up /etc/mkinitcpio.conf"; exit 1; }
+#   -- Use zstd compression
+sed -i 's/^#*COMPRESSION=.*/COMPRESSION="zstd"/' /etc/mkinitcpio.conf || { echo "Failed to set COMPRESSION=zstd"; exit 1; }
+#   -- Ensure required modules (add btrfs for root FS)
+if grep -q '^MODULES=' /etc/mkinitcpio.conf; then
+  sed -i 's/^MODULES=.*/MODULES=(btrfs)/' /etc/mkinitcpio.conf || { echo "Failed to set MODULES"; exit 1; }
+else
+  echo 'MODULES=(btrfs)' >> /etc/mkinitcpio.conf || { echo "Failed to append MODULES"; exit 1; }
+fi
+#   -- Set HOOKS depending on encryption choice
+if [ "${LUKS_TPM2:-0}" -eq 1 ]; then
+  # -- systemd-based initramfs with sd-encrypt and resume
+  sed -i 's/^HOOKS=.*/HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt resume filesystems fsck)/' /etc/mkinitcpio.conf || { echo "Failed to set HOOKS (LUKS+TPM2)"; exit 1; }
+  # -- Prepare crypttab for TPM2 auto-unlock (run after luksFormat so UUID exists)
+  ROOT_PART=${ROOT_PART:-/dev/nvme0n1p2}
+  LUKS_UUID=$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null || true)
+  if [ -n "$LUKS_UUID" ]; then
+    printf 'cryptroot UUID=%s - tpm2-device=auto
+' "$LUKS_UUID" > /etc/crypttab.initramfs || { echo "Failed to write /etc/crypttab.initramfs"; exit 1; }
+  else
+    echo "WARN: LUKS UUID not found yet; create /etc/crypttab.initramfs after luksFormat." >&2
+  fi
+else
+  # -- classic udev-based initramfs without encryption
+  sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)/' /etc/mkinitcpio.conf || { echo "Failed to set HOOKS (no encryption)"; exit 1; }
+fi
+
 # - H02: Initramfs generation
+mkinitcpio -P || { echo "mkinitcpio failed"; exit 1; }
 # - H03: Bootloader installation
 # - H04: Boot entry creation
 # - H05: Fallback entry creation
 # - H06: Microcode loading setup
 # - H07: Kernel parameter configuration
+#   If using LUKS+TPM2, remember to add kernel params later (e.g., 'rd.luks.name=<UUID>=cryptroot resume=UUID=<swap-uuid>' or 'resume_offset=...').
 # - H08: Resume/hibernation setup
+# 
 # 
 # ### [I] Security Configuration Phase
 # - I01: Root password setup
+passwd || { echo "Failed to set root password"; exit 1; }
 # - I02: Secure Boot key generation
 # - I03: Key enrollment
 # - I04: Kernel signing
@@ -168,6 +204,9 @@ locale-gen || { echo "Failed to generate locale"; exit 1; }
 # - M04: Network connectivity check
 # - M05: Service status verification
 # - M06: User account creation
+useradd -mG wheel <user> || { echo "Failed to create user"; exit 1; }
+passwd <user> || { echo "Failed to set user password"; exit 1; }
+EDITOR=vim visudo || { echo "Failed to open visudo"; exit 1; }
 # - M07: GUI installation
 # - M08: Additional software setup
 # 
