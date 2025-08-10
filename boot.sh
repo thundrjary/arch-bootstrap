@@ -135,7 +135,7 @@ pacstrap -K /mnt/stage \
     networkmanager bluez bluez-utils \        # .E07 Networking & Bluetooth
     mesa vulkan-intel intel-media-driver \    # .E08 Graphics & video drivers
     libinput iio-sensor-proxy \               # .E08 Input & sensor drivers
-    tlp pipewire wireplumber pipewire-pulse \ # .E08 Power & audio system
+    tlp tlp-rdw pipewire wireplumber pipewire-pulse \ # .E08 Power & audio system
     sof-firmware                              # .E08 Intel audio firmware
 
 
@@ -191,17 +191,12 @@ echo "127.0.1.1 lollypop.localdomain lollypop"
 # ----------------------------
 
 # .H01: Initramfs hook configuration
-cp -a /etc/mkinitcpio.conf /etc/mkinitcpio.conf.bak
-LUKS_UUID=$(blkid -s UUID -o value /dev/nvme0n1p2)
-[ -z "$LUKS_UUID" ] && { echo "ERROR: Could not determine LUKS UUID"; exit 1; }
-printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$LUKS_UUID" > /etc/crypttab.initramfs
-sed -i 's/^#*COMPRESSION=.*/COMPRESSION="zstd"/' /etc/mkinitcpio.conf
-sed -i 's/^MODULES=.*/MODULES=(btrfs)/' /etc/mkinitcpio.conf
-echo 'MODULES=(btrfs)' >> /etc/mkinitcpio.conf
-sed -i 's/^HOOKS=.*/HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt resume filesystems fsck)/' /etc/mkinitcpio.conf
-blkid -s UUID -o value "$ROOT_PART"
-printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$LUKS_UUID" > /etc/crypttab.initramfs
-sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)/' /etc/mkinitcpio.conf
+printf 'cryptroot UUID=%s - tpm2-device=auto\n' "$(blkid -s UUID -o value /dev/nvme0n1p2)" > /etc/crypttab.initramfs
+sed -i \
+  -e 's/^#\?COMPRESSION=.*/COMPRESSION="zstd"/' \
+  -e 's/^MODULES=.*/MODULES=(btrfs)/' \
+  -e 's/^HOOKS=.*/HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt filesystems fsck)/' \
+  /etc/mkinitcpio.conf
 
 # .H02: Initramfs generation
 mkinitcpio -P
@@ -260,22 +255,31 @@ systemctl enable fstrim.timer
 systemctl enable systemd-timesyncd 
 
 # .J04: Performance mount options
-# .J05: Compression settings
-# .J06: Snapshot setup
+
+# .J05: TLP enablement
+systemctl enable tlp tlp-sleep
+
+# .J06: Disable Intel PSR (i915)
+echo "options i915 enable_psr=0" > /etc/modprobe.d/i915.conf
+
+# .J07: Compression settings
+# .J08: Snapshot setup
 pacman -S snapper grub-btrfs
 snapper -c root create-config /
 systemctl enable grub-btrfs.path
+systemctl start grub-btrfs.path
+grub-mkconfig -o /boot/grub/grub.cfg
 pacman -S snapper snapper-support snap-pac grub-btrfs
 snapper -c root create-config /
 snapper -c home create-config /home
 snapper -c var create-config /var
 
-# .J07: Create baseline snapshots
+# .J09: Create baseline snapshots
 snapper -c root create --description "Baseline Root"
 snapper -c home create --description "Baseline Home"
 snapper -c var create --description "Baseline Var"
 
-# .J08: Create snapshot from @main to @sandbox
+# .J10: Create snapshot from @main to @sandbox
 btrfs subvolume snapshot /mnt/stage/@main /mnt/stage/@sandbox
 
 
