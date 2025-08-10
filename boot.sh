@@ -1,7 +1,7 @@
-#### Complete Installation Step Categories
+# ARCH LINUX BOOTSTRAP
+# ====================
 
-
-# ### [A] Pre-Installation Phase
+# [A] PRE-INSTALLATION PHASE
 
 # - A01: ISO acquisition and verification
 pacman-key -v archlinux-*.iso.sig
@@ -38,7 +38,8 @@ pacman-key --init && pacman-key --populate archlinux
 # - A12: Partition size planning
 
 
-# ### [B] Disk Preparation Phase
+# [B] DISK PREPARATION PHASE
+
 # - B01: Block device identification
 # - B02: Existing partition detection
 # - B03: Disk controller mode verification
@@ -59,7 +60,8 @@ sgdisk --new=2:0:0 --typecode=2:8300 /dev/nvme0n1
 sgdisk --print /dev/nvme0n1 
 
 
-# ### [C] Encryption Phase
+# [C] ENCRYPTION PHASE
+
 # - C01: LUKS container creation
 cryptsetup luksFormat --type luks2 /dev/nvme0n1p2
 
@@ -73,7 +75,8 @@ cryptsetup open /dev/nvme0n1p2 cryptroot
 # - C06: Crypttab.initramfs creation
 
 
-# ### [D] Filesystem Phase
+# [D] FILESYSTEM PHASE
+
 # - D01: ESP formatting (FAT32)
 mkfs.fat -F32 /dev/nvme0n1p1
 
@@ -109,7 +112,8 @@ mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=
 mount /dev/nvme0n1p1 /mnt/stage/efi
 
 
-# ### [E] System Installation Phase
+# [E] SYSTEM INSTALLATION PHASE
+
 # E01: Update keys & package database
 pacman -Sy archlinux-keyring
 
@@ -130,7 +134,8 @@ pacstrap -K /mnt/stage \
     sof-firmware                              # E08 Intel audio firmware
 
 
-# ### [F] Mount Configuration Phase
+# [F] MOUNT CONFIGURATION PHASE
+
 # - F01: Root volume mounting
 # - F02: Boot partition mounting
 # - F03: Additional mountpoint creation
@@ -142,7 +147,8 @@ genfstab -U /mnt/stage >> /mnt/stage/etc/fstab
 grep -q 'subvolid=' /mnt/stage/etc/fstab && { echo "CRITICAL: fstab contains subvolid entries!"; exit 1; }
 
 
-# ### [G] System Configuration Phase
+# [G] SYSTEM CONFIGURATION PHASE
+
 # - G01: Chroot entry
 arch-chroot /mnt/stage
 
@@ -174,7 +180,7 @@ echo "::1 localhost" >> /etc/hosts
 echo "127.0.1.1 lollypop.localdomain lollypop"
 
 
-# ### [H] Boot Configuration Phase
+# [H] BOOT CONFIGURATION PHASE
 
 # - H01: Initramfs hook configuration
 cp -a /etc/mkinitcpio.conf /etc/mkinitcpio.conf.bak
@@ -211,7 +217,8 @@ grub-mkconfig -o /boot/grub/grub.cfg
 # - H08: Resume/hibernation setup
 
 
-# ### [I] Security Configuration Phase
+# [I] SECURITY CONFIGURATION PHASE
+
 # - I01: Root password setup
 passwd
 
@@ -219,6 +226,7 @@ passwd
 # - I03: Key enrollment
 # - I04: Kernel signing
 # - I05: UKI creation (optional)
+
 # - I06: TPM2 configuration
 systemd-cryptenroll --tpm2-device=list > /dev/null 2>&1
 if systemd-cryptenroll --tpm2-device=list > /dev/null 2>&1; then
@@ -230,7 +238,8 @@ else
 fi
 
 
-# ### [J] System Optimization Phase
+# [J] SYSTEM OPTIMIZATION PHASE
+
 # - J01: Swappiness tuning
 echo "vm.swappiness=10" >> /etc/sysctl.d/99-swappiness.conf
 
@@ -260,7 +269,8 @@ snapper -c var create --description "Baseline Var"
 btrfs subvolume snapshot /mnt/stage/@main /mnt/stage/@sandbox
 
 
-# ### [K] Pre-Reboot Verification Phase
+# [K] PRE-REBOOT VERIFICATION PHASE
+
 # - K01: Configuration file review
 # - K02: UUID verification
 # - K03: Bootloader entry validation
@@ -269,7 +279,8 @@ btrfs subvolume snapshot /mnt/stage/@main /mnt/stage/@sandbox
 # - K06: Service enablement check
 
 
-# ### [L] Reboot Phase
+# [L] REBOOT PHASE
+
 # - L01: Chroot exit
 exit
 
@@ -283,7 +294,8 @@ reboot
 # - L04: Installation medium removal
 
 
-# ### [M] Post-Installation Phase
+# [M] POST-INSTALLATION PHASE
+
 # - M01: First boot verification
 # - M02: Suspend/resume testing
 # - M03: Hibernation testing
@@ -303,7 +315,8 @@ reflector --country US --latest 50 --protocol https --sort rate --save /etc/pacm
 pacman -Syu
 
 
-# ### [N] Maintenance & Recovery Phase
+# [N] MAINTENANCE & RECOVERY PHASE
+
 # - N01: GPT restore procedures
 # - N02: Bootloader recovery
 # - N03: UUID mismatch fixes
