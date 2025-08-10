@@ -87,18 +87,24 @@ mount -o noatime,compress=zstd:3,space_cache=v2,autodefrag,discard=async,subvol=
 mount /dev/nvme0n1p1 /mnt/stage/efi
 # 
 # ### [E] System Installation Phase
-# - E01: Mirror selection and ranking
-# # (optional) Example: reflector --latest 20 --protocol https --sort rate --save /etc/pacman.d/mirrorlist
-# - E02: Base package installation
-pacstrap -K /mnt/stage base linux linux-firmware btrfs-progs intel-ucode
-# - E03: Kernel installation (single/dual)
-# - E04: Firmware installation
-# - E05: Microcode installation
-# - E06: Essential tools installation
-pacstrap -K /mnt/stage networkmanager vim sudo man-db
-pacstrap -K /mnt/stage grub efibootmgr
-pacstrap -K /mnt/stage tpm2-tss tpm2-tools
-# - E07: Network tools installation
+# E01: Update keys & package database
+pacman -Sy archlinux-keyring
+
+# E02: Mirror selection & ranking
+reflector --country US --latest 50 --protocol https --sort rate --save /etc/pacman.d/mirrorlist
+
+# E03–E08: All base system, tools, drivers, firmware, and extras
+pacstrap -K /mnt/stage \
+    base btrfs-progs \                        # E03 Base system + filesystem tools
+    linux linux-firmware intel-ucode \        # E03 Kernel + firmware + microcode
+    vim sudo man-db man-pages \               # E04 Essential system tools
+    grub efibootmgr \                         # E05 Bootloader & EFI tools
+    tpm2-tss tpm2-tools \                     # E06 Security & TPM support
+    networkmanager bluez bluez-utils \        # E07 Networking & Bluetooth
+    mesa vulkan-intel intel-media-driver \    # E08 Graphics & video drivers
+    libinput iio-sensor-proxy \               # E08 Input & sensor drivers
+    tlp pipewire wireplumber pipewire-pulse \ # E08 Power & audio system
+    sof-firmware                              # E08 Intel audio firmware
 # 
 # ### [F] Mount Configuration Phase
 # - F01: Root volume mounting
@@ -228,6 +234,10 @@ passwd <user>
 EDITOR=vim visudo
 # - M07: GUI installation
 # - M08: Additional software setup
+# - M09: Update mirrors
+reflector --country US --latest 50 --protocol https --sort rate --save /etc/pacman.d/mirrorlist
+# - M10: 
+pacman -Syu
 # 
 # ### [N] Maintenance & Recovery Phase
 # - N01: GPT restore procedures
