@@ -1,4 +1,4 @@
-# ## Complete Installation Step Categories - Flat List
+# ## Complete Installation Step Categories
 # 
 # ### [A] Pre-Installation Phase
 # - A01: ISO acquisition and verification
@@ -180,4 +180,3 @@ locale-gen || { echo "Failed to generate locale"; exit 1; }
 # - N06: SSD health monitoring
 # - N07: System backup strategy
 # - N08: Performance monitoring
-```
